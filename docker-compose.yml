@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  agent-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["node", "services/agent-service/index.js"]
+    env_file:
+      - .env
+    environment:
+      PORT: 8080
+      AGENT_SERVICE_URL: http://agent-service:8080
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  bot-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["node", "services/bot-service/index.js"]
+    env_file:
+      - .env
+    environment:
+      BOT_PORT: 3000
+      AGENT_SERVICE_URL: http://agent-service:8080
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - agent-service
+    restart: unless-stopped

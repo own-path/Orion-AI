@@ -1,0 +1,8 @@
+node_modules
+.env
+data/runtime-state.json
+data/imessage-state.json
+data/imessage-media
+data/voice/*
+!data/voice/.gitkeep
+npm-debug.log*
