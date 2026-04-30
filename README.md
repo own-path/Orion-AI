@@ -7,114 +7,137 @@
  ╚═════╝ ╚═╝  ╚═╝╚═╝ ╚═════╝ ╚═╝  ╚═══╝
 ```
 
-# ORION
+# Orion
 
-Orion is an agentic DeFi CLI for Solana with an optional HTTP mode. Install it once, then call `orion` from your terminal. On first launch it walks you through Ollama Cloud key setup or a local Ollama install, then uses live chain data as the source of truth.
+Agentic DeFi CLI for Solana. Ask questions in plain English — Orion plans, fetches live chain data, and returns grounded answers in your terminal.
 
-## What it does
+## Install
 
-- plans first, then splits large prompts into smaller steps
-- inspects Solana wallets, accounts, signatures, token accounts, and programs
-- uses Solscan when available and falls back to RPC when needed
-- queues long-running work as background tasks or watches
-- runs small read-only Solana code snippets when code is the fastest way to verify something
-- keeps shell execution and file edits behind explicit confirmation
+```bash
+npm install -g orion-ai-cli
+```
 
-## Quick start
-
-1. Install Orion globally:
-
-   ```bash
-   npm install -g orion-ai
-   ```
-
-2. Copy `.env.example` to `.env`.
-3. Run `orion` once and complete the onboarding flow.
-4. Orion will prompt for Ollama Cloud credentials or offer to install local Ollama, then save the result in `~/.orion/config.env`.
-5. Set `SOLSCAN_API_KEY` if you have one.
-6. Run `orion` for the interactive terminal, or `orion --serve` for HTTP mode.
-
-## Install and run
-
-After installation, you can launch Orion directly:
+Then launch:
 
 ```bash
 orion
 ```
 
-The first launch runs onboarding so you can choose:
+First launch runs a short onboarding to configure your model backend and Solana cluster.
 
-- Ollama Cloud with an API key
-- Local Ollama install on your machine
-- a model, Solana cluster, strategy, and wallet context
+## Setup
+
+Copy `.env.example` to `.env` and fill in what you have:
+
+```
+OLLAMA_BASE_URL=https://ollama.com          # or http://localhost:11434 for local
+OLLAMA_API_KEY=your_key                     # required for Ollama Cloud
+OLLAMA_MODEL=gemma4:31b-cloud
+
+SOLANA_RPC_URL=https://api.devnet.solana.com
+SOLANA_NETWORK=devnet
+
+SOLSCAN_API_KEY=your_key                    # optional, unlocks richer snapshots
+```
+
+Settings are persisted in `~/.orion/config.env` after onboarding.
+
+## What it does
+
+- Inspects wallets, accounts, token accounts, transaction signatures, and programs
+- Plans multi-step prompts and executes each step with live progress markers
+- Falls back gracefully from Solscan → RPC when keys are missing
+- Watches accounts and signatures in the background across restarts
+- Runs small read-only Solana code snippets for verification
+- Remembers recently analyzed addresses across turns
+
+## Terminal UI
+
+The interactive terminal shows real-time step progress as Orion works:
+
+```
+⏺ Classifying target as a wallet address  [1/3]
+  ⎿  address  AbNZmD3ffemMzGo3xiaXzTJf7yb7odqc75pAsMWVWHbq
+     network  devnet
+⏺ Fetching Solscan account snapshot  [2/3]
+  ⎿  source  Solscan Pro
+     balance  0.004994399 SOL
+     signatures  10 retrieved
+⏺ Summarizing snapshot  [3/3]
+  ⎿  model  gemma4:31b-cloud
+```
+
+Results that are key-value structured render as a summary panel:
+
+```
+┃ ⬡ [ SUMMARY ]
+┃ ──────────────────────────────────────────────
+┃ Address        AbNZmD3ffemMzGo3xiaXzTJf7yb7odqc75pAsMWVWHbq
+┃ Owner                                   System Program
+┃ Balance                             0.004994399 SOL
+┃ Executable                                    false
+```
+
+## Slash commands
+
+| Command | What it does |
+|---|---|
+| `/status` | Show session state, model, network, wallet |
+| `/models` | List available Ollama models |
+| `/cluster devnet\|testnet\|mainnet` | Switch Solana network |
+| `/rpc` | Show current RPC endpoint |
+| `/rpc call <method> [params]` | Raw RPC call |
+| `/rpc set <url>` | Set a custom RPC URL |
+| `/wallet create` | Generate a new keypair |
+| `/wallet select <address>` | Set active wallet |
+| `/wallet balance [address]` | Check SOL balance |
+| `/portfolio [address]` | Show token portfolio |
+| `/account <address>` | Inspect an account |
+| `/tx <signature>` | Decode a transaction |
+| `/sigs <address> [limit]` | Recent signatures |
+| `/program <programId>` | Inspect a program |
+| `/fees [address...]` | Estimate fees |
+| `/tasks` | List background tasks |
+| `/task-status <id>` | Check task status |
+| `/resume <id>` | Resume a paused task |
+| `/cancel <id>` | Cancel a task |
+| `/exec [js\|file]` | Run a Solana snippet |
+| `/run <command>` | Run a shell command |
+| `/patch <file>` | Apply a file patch |
+| `/read <path>` | Read a file |
+| `/voice <text>` | Speak output |
+| `/help` | List all commands |
+
+## Example prompts
+
+```
+analyze this wallet AbNZmD3ffemMzGo3xiaXzTJf7yb7odqc75pAsMWVWHbq
+get the last 5 transactions
+tell me about this signature 5cVXhg...jSnA
+watch this wallet and alert me if the balance changes
+compare this wallet across devnet and mainnet
+what is a token account?
+```
 
 ## HTTP mode
 
-For scripting and automation, run the built-in HTTP server:
+For scripting and automation:
 
 ```bash
 orion --serve
 ```
 
-Then send a prompt:
-
 ```bash
 curl -s http://127.0.0.1:8787/ask \
   -H 'content-type: application/json' \
-  -d '{"prompt":"analyze this wallet 7jysTypkmEDg5CXXWuPaAcytWC5UxWUCmj9NUJb1NetG"}'
+  -d '{"prompt":"analyze this wallet AbNZmD3ffemMzGo3xiaXzTJf7yb7odqc75pAsMWVWHbq"}'
 ```
 
-You can also request plain text:
-
-```bash
-curl -s http://127.0.0.1:8787/ask \
-  -H 'accept: text/plain' \
-  -H 'content-type: application/json' \
-  -d '{"prompt":"what is devnet?"}'
-```
-
-Set `ORION_PORT` if you want a different port.
-
-## Good prompts
-
-- `what about 3tVWtRX2Eb6saUKgrJz1QxdMgQjAdZ5TMdJxuDBfiyqi`
-- `tell me anything you know about this 5cVXhgAoNpSyx3QS15kVkUQoqo42s1aeggLRpUsp6ETG7kQQct3F5dyroTq68xtUv8TW5nMUHgnXRRKcRQr7jSnA`
-- `track this wallet for the next few hours and report anything unusual`
-- `inspect this program and explain the accounts it uses`
-- `compare this wallet across devnet and mainnet`
-- `show me how a token account works, then inspect one on chain`
-
-## Useful commands
-
-- `/status`
-- `/models`
-- `/rpc`
-- `/rpc methods`
-- `/rpc call <method> [json params]`
-- `/rpc set <url>`
-- `/wallet create`
-- `/wallet select <address>`
-- `/wallet balance [address]`
-- `/portfolio [address]`
-- `/account <address>`
-- `/tx <signature>`
-- `/sigs <address> [limit]`
-- `/program <programId> [limit]`
-- `/fees [address...]`
-- `/read <path>`
-- `/rust-client [dir]`
-- `/run <shell command>`
-- `/exec [js|file] ...`
-- `/patch <file>`
-- `/tasks`
-- `/task-status <taskId>`
-- `/resume <taskId>`
-- `/cancel <taskId>`
-- `/voice <text>`
+Set `ORION_PORT` to change the port.
 
 ## Notes
 
-- `SOLSCAN_API_KEY` unlocks richer explorer snapshots.
-- Restart Orion after changing `.env`.
-- `orion` launches the interactive terminal UI.
-- `orion --serve` launches the curlable HTTP server.
+- Restart Orion after editing `.env`
+- Watch tasks survive restarts and resume automatically
+- Context window usage is shown live in the header bar
+- `SOLSCAN_API_KEY` unlocks token balances, DeFi positions, and richer transaction detail
