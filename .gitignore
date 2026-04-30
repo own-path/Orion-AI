@@ -1,8 +1,9 @@
 node_modules
 .env
+data/cli-session.json
 data/runtime-state.json
+data/tasks.json
 data/imessage-state.json
-data/imessage-media
 data/voice/*
 !data/voice/.gitkeep
 npm-debug.log*

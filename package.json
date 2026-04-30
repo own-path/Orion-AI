@@ -1,18 +1,30 @@
 {
   "name": "orion-ai",
   "version": "0.1.0",
+  "description": "Agentic DeFi CLI for Solana",
   "private": true,
   "type": "module",
+  "bin": {
+    "orion": "./bin/orion.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "services",
+    "README.md",
+    ".env.example"
+  ],
   "scripts": {
-    "start:agent": "node services/agent-service/index.js",
-    "start:bot": "node services/bot-service/index.js",
-    "check": "node --check services/agent-service/index.js && node --check services/bot-service/index.js && node --check services/solana-service/index.js && node --check services/snowflake-service/index.js && node --check services/voice-service/index.js && node --check services/shared/gemini-agent.js"
+    "start": "node bin/orion.js",
+    "start:cli": "node bin/orion.js",
+    "check": "node --check bin/orion.js && node --check src/cli/index.js && node --check src/cli/bootstrap.js && node --check src/cli/command-registry.js && node --check src/cli/langgraph-harness.js && node --check src/cli/langgraph-tools.js && node --check src/cli/onboarding.js && node --check src/cli/permissions.js && node --check src/cli/renderer.js && node --check src/cli/runtime-session.js && node --check src/cli/runtime.js && node --check src/cli/session-store.js && node --check src/cli/task-store.js && node --check src/cli/diff-preview.js && node --check src/cli/shell-tool.js && node --check src/cli/theme.js && node --check src/cli/tool-registry.js && node --check services/solana-service/index.js && node --check services/voice-service/index.js && node --check services/shared/ollama-agent.js"
   },
   "dependencies": {
+    "@langchain/core": "^0.3.58",
+    "@langchain/langgraph": "^0.2.39",
+    "@langchain/ollama": "^0.2.0",
     "@solana/web3.js": "^1.98.0",
     "dotenv": "^16.4.5",
-    "express": "^4.21.2",
-    "grammy": "^1.35.0",
-    "snowflake-sdk": "^2.0.2"
+    "zod": "^3.24.1"
   }
 }
