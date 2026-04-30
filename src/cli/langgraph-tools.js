@@ -83,7 +83,7 @@ export function buildLangGraphTools(ctx) {
           {
             query: result.query,
             consensus: result.consensus,
-            usableResults: result.consensus?.consensus ? result.results : []
+            results: result.results
           },
           null,
           2

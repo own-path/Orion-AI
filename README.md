@@ -151,6 +151,22 @@ curl -s http://127.0.0.1:8787/ask \
 
 Set `ORION_PORT` to change the port.
 
+## Web search
+
+Orion can search the web to ground answers in current documentation and public facts. By default it uses DuckDuckGo. To use Google Search, add two keys to your `.env`:
+
+```
+GOOGLE_API_KEY=your-google-api-key
+GOOGLE_CSE_ID=your-custom-search-engine-id
+```
+
+Get them at [console.cloud.google.com](https://console.cloud.google.com) (enable Custom Search API) and [programmablesearchengine.google.com](https://programmablesearchengine.google.com) (create a search engine set to "Search the entire web").
+
+## Coming soon
+
+- **Telegram integration** — run Orion as a Telegram bot, ask questions and get on-chain analysis directly in chat
+- **Web search upgrades** — richer search with source ranking, multi-query synthesis, and citation display
+
 ## Notes
 
 - Restart Orion after editing `.env`

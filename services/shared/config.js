@@ -38,6 +38,8 @@ export const config = {
   solscanBaseUrl: process.env.SOLSCAN_BASE_URL || "https://pro-api.solscan.io/v2.0",
   solscanApiKey: process.env.SOLSCAN_API_KEY || "",
   solscanRequired: process.env.SOLSCAN_REQUIRED === "true",
+  googleApiKey: process.env.GOOGLE_API_KEY || "",
+  googleCseId: process.env.GOOGLE_CSE_ID || "",
   decisionThreshold: Number(process.env.ORION_DECISION_CONFIDENCE_THRESHOLD || 0.6),
   loopIntervalMs: Number(process.env.ORION_LOOP_INTERVAL_MS || 60000),
   taskPollIntervalMs: Number(process.env.ORION_TASK_POLL_INTERVAL_MS || 5000),
@@ -90,6 +92,8 @@ export function syncConfigFromEnv() {
   config.solscanRequired = process.env.SOLSCAN_REQUIRED !== undefined
     ? process.env.SOLSCAN_REQUIRED === "true"
     : config.solscanRequired;
+  config.googleApiKey = envOr("GOOGLE_API_KEY", config.googleApiKey);
+  config.googleCseId = envOr("GOOGLE_CSE_ID", config.googleCseId);
 }
 
 export function requireConfig(value, name) {

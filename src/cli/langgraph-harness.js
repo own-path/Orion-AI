@@ -206,11 +206,31 @@ export class LangGraphHarness {
     this.memory = new MemorySaver();
   }
 
-  async decomposePrompt(ctx, prompt) {
+  async decomposePrompt(ctx, prompt, hints = {}) {
     // Structural pre-check: if heuristics already say "single answer", skip the LLM planner call
     const quick = fallbackPlan(prompt);
     if (quick.mode === "answer" && quick.steps.length === 1) {
       return quick;
+    }
+
+    // Fast-path for simple address/signature lookups: single clause, short non-target content,
+    // no second Solana address. Compound or multi-sentence prompts fall through to the LLM planner
+    // so it can think and plan the full response accordingly.
+    if (hints.hasTarget && hints.target) {
+      const text = String(prompt).toLowerCase();
+      const withoutTarget = text.replace(hints.target.toLowerCase(), "").trim();
+      const clauses = withoutTarget.split(/[.?!]+/).map(s => s.trim()).filter(Boolean);
+      const wordCount = withoutTarget.split(/\s+/).filter(Boolean).length;
+      const hasSecondAddress = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/.test(withoutTarget);
+      if (clauses.length <= 1 && wordCount <= 8 && !hasSecondAddress) {
+        return {
+          mode: "lookup",
+          title: "Direct address lookup",
+          summary: "Fetch and summarize the Solana target.",
+          needsBackground: false,
+          steps: [{ title: "Fetch and summarize", goal: prompt }]
+        };
+      }
     }
 
     const headers = config.ollamaApiKey

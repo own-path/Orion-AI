@@ -329,24 +329,6 @@ function isLikelySolanaSignature(value) {
   return Boolean(value) && value.length >= 80 && value.length <= 100 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(value) && !isValidSolanaAddress(value);
 }
 
-function looksLikeSolanaLookupPrompt(prompt) {
-  const text = String(prompt).toLowerCase();
-  return [
-    "tell me",
-    "what do you know",
-    "what can you tell",
-    "what about",
-    "anything about",
-    "details on",
-    "look up",
-    "inspect",
-    "analyze",
-    "look at",
-    "who is",
-    "summarize",
-    "what is this"
-  ].some((phrase) => text.includes(phrase));
-}
 
 function promptWantsFreshLookup(prompt) {
   const text = String(prompt).toLowerCase();
@@ -426,34 +408,6 @@ function selectSolanaCandidates(prompt, memory) {
   return [...new Set([...promptCandidates, ...memoryCandidates].filter(Boolean))].slice(0, 2);
 }
 
-function shouldDirectLookup(prompt, target) {
-  if (!target) {
-    return false;
-  }
-
-  const text = String(prompt).toLowerCase();
-  const watchSignals = [
-    "watch",
-    "monitor",
-    "keep an eye",
-    "keep checking",
-    "track",
-    "observe",
-    "follow",
-    "alert me",
-    "notify me",
-    "revisit later",
-    "come back later",
-    "keep running",
-    "long horizon"
-  ];
-
-  if (watchSignals.some((phrase) => text.includes(phrase))) {
-    return false;
-  }
-
-  return looksLikeSolanaLookupPrompt(prompt) || text.includes(target.toLowerCase());
-}
 
 function isValidWatchTarget(watchType, target) {
   if (watchType === "logs") {
@@ -833,11 +787,6 @@ export class OrionHarness {
       }
     }
 
-    const directTargetLookup = Boolean(
-      effectiveTarget &&
-      (isImplicitTarget || shouldDirectLookup(prompt, effectiveTarget)) &&
-      (isValidSolanaAddress(effectiveTarget) || isLikelySolanaSignature(effectiveTarget))
-    );
 
     try {
       const cachedBatchCandidate = !effectiveTarget &&
@@ -918,20 +867,13 @@ export class OrionHarness {
 
       let plan;
       try {
-        if (directTargetLookup) {
-          plan = {
-            mode: "lookup",
-            title: "Direct lookup",
-            summary: "Skipping planning for a direct Solana lookup.",
-            needsBackground: false,
-            steps: [{ title: "Fetch snapshot", goal: prompt }]
-          };
-        } else {
           plan = await withSpinner(
-            () => this.graphHarness.decomposePrompt(this.context(), prompt),
+            () => this.graphHarness.decomposePrompt(this.context(), prompt, {
+              hasTarget: Boolean(effectiveTarget),
+              target: effectiveTarget || undefined
+            }),
             { message: "planning reply" }
           );
-        }
       } catch {
         plan = {
           mode: "answer",
@@ -943,7 +885,7 @@ export class OrionHarness {
       }
 
     const planSteps = Array.isArray(plan.steps) && plan.steps.length ? plan.steps : [{ title: "Answer directly", goal: prompt }];
-    const resolvedLookup = (isImplicitTarget || shouldDirectLookup(prompt, effectiveTarget)) && (isValidSolanaAddress(effectiveTarget) || isLikelySolanaSignature(effectiveTarget));
+    const resolvedLookup = plan.mode === "lookup" && effectiveTarget && (isValidSolanaAddress(effectiveTarget) || isLikelySolanaSignature(effectiveTarget));
     if (!resolvedLookup && (plan.mode !== "answer" || plan.needsBackground || planSteps.length > 1)) {
       printPlan(
         `${plan.title} · ${planSteps.length} step${planSteps.length === 1 ? "" : "s"}${plan.needsBackground ? " · background" : ""}`,
