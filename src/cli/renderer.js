@@ -1,92 +1,34 @@
-import path from "node:path";
-import { execSync } from "node:child_process";
-import { accent, buildLaunchSplash, danger, muted, success } from "./theme.js";
-import { C, paint, panel, rule, headerStrip, BOLD } from "./ui.js";
+import os from "node:os";
+import { config } from "../../services/shared/config.js";
+import { accent, buildLaunchSplash, danger, muted } from "./theme.js";
+import { C, paint, panel, rule, BOLD, termCols, stripAnsi } from "./ui.js";
 
-function shortPath(p, maxParts = 2) {
-  if (!p) return "";
-  const parts = p.split(path.sep).filter(Boolean);
-  if (parts.length <= maxParts) return p;
-  return "../" + parts.slice(-maxParts).join("/");
-}
-
-function gitBranch(cwd) {
-  try {
-    return execSync("git branch --show-current", {
-      cwd,
-      stdio: ["ignore", "pipe", "ignore"],
-      encoding: "utf8",
-      timeout: 200
-    }).trim() || null;
-  } catch {
-    return null;
-  }
+function configFileLabel() {
+  return config.persistentConfigFilePath.replace(os.homedir(), "~");
 }
 
 function normalizeTerminalLine(line) {
+  if (line && typeof line === "object") {
+    return JSON.stringify(line);
+  }
   const stripped = String(line)
     .replace(/\*\*(.*?)\*\*/g, "$1")
     .replace(/__(.*?)__/g, "$1")
+    .replace(/\*(.*?)\*/g, "$1")
+    .replace(/_(.*?)_/g, "$1")
     .replace(/`([^`]+)`/g, "$1")
-    .replace(/^\s{0,3}#{1,6}\s+/g, "");
+    .replace(/^\s{0,3}#{1,6}\s+/g, "")
+    .replace(/^---+$/, "");
 
   if (/^\s*[\*\-\+]\s+/.test(stripped)) {
-    return stripped.replace(/^\s*[\*\-\+]\s+/, "• ");
+    return stripped.replace(/^\s*[\*\-\+]\s+/, "· ");
   }
 
   return stripped;
 }
 
-export function printHeaderStrip(opts) {
-  console.log(buildHeaderStrip(opts));
-}
-
-function buildHeaderStrip({ workspace, model, ollamaBaseUrl, network, currentWallet }) {
-  const ws = shortPath(workspace, 2);
-  const branch = gitBranch(workspace);
-  const dot = paint("·", C.border);
-  const wallet = currentWallet ? currentWallet.slice(0, 4) : null;
-  const isCloud = /ollama\.com|ollama\.ai/.test(ollamaBaseUrl || "");
-  const costTag = isCloud ? paint("$Cloud", C.success) : paint("$Free", C.success);
-
-  const leftParts = [
-    paint("orion", BOLD + C.primary),
-    paint(ws, C.muted),
-    branch ? paint(`(${branch})`, C.muted) : null,
-    paint(network, C.accent),
-    wallet ? paint(wallet, C.success) : paint("no-wallet", C.border)
-  ].filter(Boolean);
-  const left = leftParts.join(` ${dot} `);
-
-  const right = `${paint(model, C.warning)}  ${costTag}`;
-
-  return headerStrip({ left, right });
-}
-
-export function renderBootLines({ workspace, rpcUrl, model, ollamaAvailable, commandCount, toolCount, queuedTaskCount, watchTaskCount }) {
-  const dot = paint("·", C.border);
-  const ws = shortPath(workspace, 2);
-  const net = (rpcUrl || "").replace(/^https?:\/\//, "").split("/")[0];
-  return [
-    `${paint("workspace", C.muted)}  ${ws}  ${dot}  ${paint("rpc", C.muted)} ${net}`,
-    `${paint("ollama   ", C.muted)}  ${ollamaAvailable ? success("● ready") : danger("○ offline")}  ${dot}  ${paint("model", C.muted)} ${paint(model, C.accent)}`,
-    `${paint("queue    ", C.muted)}  ${queuedTaskCount} queued  ${dot}  ${watchTaskCount} watching  ${dot}  ${commandCount} cmds  ${dot}  ${toolCount} tools`
-  ];
-}
-
 export function printBanner(opts = {}) {
   console.log(buildLaunchSplash(opts));
-}
-
-export function printLaunchSummary({ boot, session } = {}) {
-  const network = session?.network || "devnet";
-  const wallet = session?.currentWallet || "none selected";
-  const strategy = session?.currentStrategy || "balanced";
-  const model = boot?.model || session?.model || "default";
-  const status = boot?.ollamaAvailable ? "online" : "offline";
-  const source = boot?.ollamaRemote ? "$Cloud" : "$Local";
-  console.log(`${paint("orion", BOLD + C.primary)} ${paint("·", C.border)} ${paint(network, C.accent)} ${paint("·", C.border)} ${paint(wallet, C.success)} ${paint("·", C.border)} ${paint(strategy, C.warning)}    ${paint(model, C.warning)}  ${paint(status, boot?.ollamaAvailable ? C.success : C.danger)}  ${paint(source, boot?.ollamaRemote ? C.success : C.muted)}`);
-  console.log(rule(C.border));
 }
 
 export function printPanel(title, lines) {
@@ -98,7 +40,18 @@ export function printNotice(text) {
 }
 
 export function printStep(step, text) {
-  console.log(`${paint("•", C.primary)} ${paint(step, C.secondary)} ${muted(text)}`);
+  console.log(`${paint("⏺", BOLD + C.primary)} ${paint(text, C.primary)}  ${paint(`[${step}]`, C.accent)}`);
+}
+
+export function printStepDetail(...lines) {
+  const toText = (value) => {
+    if (value && typeof value === "object") return JSON.stringify(value);
+    return String(value);
+  };
+  const [first, ...rest] = lines.flatMap(l => toText(l).split("\n")).filter(l => l.trim());
+  if (!first) return;
+  console.log(`  ${paint("⎿", C.border)}  ${muted(first)}`);
+  for (const l of rest) console.log(`     ${muted(l)}`);
 }
 
 export function printPlan(title, summary, steps = []) {
@@ -117,21 +70,92 @@ export function printError(error) {
 
 export function printUserEcho(text) {
   const lines = String(text).split("\n");
-  console.log(`${paint("│", C.border)} ${muted(lines[0] || "")}`);
-  if (lines.length > 1) {
-    console.log("");
-  }
+  console.log(`${paint("❯", BOLD + C.primary)} ${paint(lines[0] || "", C.muted)}`);
   for (const line of lines.slice(1)) {
-    console.log(`  ${muted(line)}`);
+    console.log(`  ${paint(line, C.muted)}`);
   }
 }
 
-export function printAssistant(text, { model, elapsedMs } = {}) {
+function detectValueColor(value) {
+  const v = String(value).toLowerCase();
+  if (/\b(low|safe|good|healthy|ok|success)\b/.test(v)) return C.success;
+  if (/\b(medium|moderate|warning|caution)\b/.test(v)) return C.warning;
+  if (/\b(high|critical|danger|error|fail)\b/.test(v)) return C.danger;
+  return C.primary;
+}
+
+function parseKvLine(line) {
+  const cleaned = String(line)
+    .replace(/^\s*[•·\-\*]+\s*/, "")
+    .trim();
+  const idx = cleaned.indexOf(":");
+  if (idx <= 0) {
+    return null;
+  }
+  const key = cleaned.slice(0, idx).trim();
+  const value = cleaned.slice(idx + 1).trim();
+  if (!key || !value) {
+    return null;
+  }
+  return { key, value };
+}
+
+function isKvBlock(lines) {
+  const nonEmpty = lines.filter(l => l.trim().length > 0);
+  if (nonEmpty.length < 2) return false;
+  const kvCount = nonEmpty.filter((line) => Boolean(parseKvLine(line))).length;
+  return kvCount / nonEmpty.length >= 0.6;
+}
+
+export function printSummaryPanel(title, kvPairs, { model, elapsedMs } = {}) {
+  const cols = termCols();
+
+  const maxKeyLen = Math.max(0, ...kvPairs.map(p => String(p.key).length));
+  const maxValLen = Math.max(0, ...kvPairs.map(p => String(p.value).length));
+  const keyColW = maxKeyLen + 2;
+  const contentW = Math.min(cols - 6, Math.max(keyColW + maxValLen + 2, 44));
+  const valColW = contentW - keyColW;
+
+  const headerText = `⬡ [ ${title.toUpperCase()} ]`;
+  const headerPad = " ".repeat(Math.max(0, contentW - headerText.length));
+  const top = `${paint("┃", C.warning)} ${paint(headerText, BOLD + C.warning)}${headerPad}`;
+  const divider = `${paint("┃", C.warning)} ${"─".repeat(contentW)}`;
+
+  const rows = kvPairs.map(({ key, value }) => {
+    const keyStr = String(key).padEnd(keyColW);
+    const valStr = String(value);
+    const valFit = valStr.length > valColW ? valStr.slice(0, valColW - 1) + "…" : valStr;
+    const valPad = " ".repeat(Math.max(0, valColW - valFit.length));
+    return `${paint("┃", C.warning)} ${paint(keyStr, C.muted)}${paint(valPad + valFit, detectValueColor(value))}`;
+  });
+
+  console.log("");
+  console.log(top);
+  console.log(divider);
+  for (const row of rows) console.log(row);
+  if (model) {
+    const seconds = elapsedMs != null ? `  ${paint("·", C.border)}  ${paint(`${(elapsedMs / 1000).toFixed(1)}s`, C.muted)}` : "";
+    console.log(`\n  ${paint("▣", C.secondary)} ${paint(model, C.warning)}${seconds}`);
+  }
+}
+
+export function printAssistant(text, { model, elapsedMs, compact = false } = {}) {
   const lines = String(text)
     .split("\n")
     .map(normalizeTerminalLine);
+
+  const nonEmpty = lines.filter(l => l.trim().length > 0);
+  if (isKvBlock(nonEmpty)) {
+    const kvPairs = nonEmpty.map(parseKvLine).filter(Boolean);
+    printSummaryPanel("Summary", kvPairs, { model, elapsedMs });
+    return;
+  }
+
   console.log("");
-  for (const line of lines) {
+  const displayLines = compact && lines.length > 5
+    ? [...lines.slice(0, 4), "…"]
+    : lines;
+  for (const line of displayLines) {
     if (line.trim().length === 0) {
       console.log("");
     } else {
@@ -159,14 +183,14 @@ export function printPreflightWarning(boot) {
     console.log("");
     console.log(`${tag} ${paint("OLLAMA_API_KEY is empty — required for Ollama Cloud.", C.warning)}`);
     console.log(`  ${paint("→ create a key:", C.muted)} ${paint("https://ollama.com/settings/keys", C.accent)}`);
-    console.log(`  ${paint("→ paste into", C.muted)} ${paint(".env", C.accent)} ${paint("as", C.muted)} ${paint("OLLAMA_API_KEY=…", C.accent)}`);
+    console.log(`  ${paint("→ Orion stores it in", C.muted)} ${paint(configFileLabel(), C.accent)} ${paint("as", C.muted)} ${paint("OLLAMA_API_KEY=…", C.accent)}`);
     return;
   }
   if (boot.ollamaAuthFailed) {
     console.log("");
     console.log(`${tag} ${paint("Ollama Cloud rejected the API key (401).", C.warning)}`);
     console.log(`  ${paint("→ get a key:", C.muted)} ${paint("https://ollama.com/settings/keys", C.accent)}`);
-    console.log(`  ${paint("→ paste it into", C.muted)} ${paint(".env", C.accent)} ${paint("as", C.muted)} ${paint("OLLAMA_API_KEY=…", C.accent)}`);
+    console.log(`  ${paint("→ update", C.muted)} ${paint(configFileLabel(), C.accent)} ${paint("with", C.muted)} ${paint("OLLAMA_API_KEY=…", C.accent)}`);
     return;
   }
   if (!boot.ollamaAvailable) {

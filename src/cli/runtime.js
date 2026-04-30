@@ -1,4 +1,5 @@
 import readline from "node:readline/promises";
+import { emitKeypressEvents } from "node:readline";
 import { stdin as input, stdout as output } from "node:process";
 import { PublicKey } from "@solana/web3.js";
 import { config } from "../../services/shared/config.js";
@@ -9,13 +10,13 @@ import { buildBootstrap } from "./bootstrap.js";
 import { buildCommandRegistry } from "./command-registry.js";
 import { LangGraphHarness } from "./langgraph-harness.js";
 import { runOnboarding } from "./onboarding.js";
-import { printAssistant, printError, printNotice, printPanel, printPlan, printStep, printSummary, printUserEcho } from "./renderer.js";
+import { printAssistant, printError, printNotice, printPanel, printPlan, printStep, printStepDetail, printSummary, printUserEcho } from "./renderer.js";
 import { HarnessSession } from "./runtime-session.js";
 import { runShellCommand } from "./shell-tool.js";
 import { TaskStore } from "./task-store.js";
 import { muted, success } from "./theme.js";
 import { buildToolRegistry } from "./tool-registry.js";
-import { promptMarker, promptRule, turnFooterHint, turnHeader, withSpinner } from "./ui.js";
+import { C, promptMarker, promptRule, rule, turnFooterHint, turnHeader, withSpinner } from "./ui.js";
 
 function buildCompleter(commandRegistry) {
   return (line) => {
@@ -129,6 +130,189 @@ function extractSolanaCandidate(text) {
   return matches?.[0] || null;
 }
 
+function extractSolanaCandidates(text) {
+  return [...new Set(String(text).match(/\b[1-9A-HJ-NP-Za-km-z]{32,100}\b/g) || [])];
+}
+
+function tokenizeText(text) {
+  return String(text || "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/g)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 2 && ![
+      "the",
+      "and",
+      "for",
+      "with",
+      "from",
+      "that",
+      "this",
+      "are",
+      "was",
+      "were",
+      "you",
+      "your",
+      "into",
+      "about",
+      "what",
+      "who",
+      "why",
+      "how",
+      "when",
+      "where",
+      "does",
+      "doesnt",
+      "dont",
+      "not",
+      "can",
+      "will",
+      "last",
+      "recent",
+      "each",
+      "all"
+    ].includes(token));
+}
+
+function overlapScore(promptTokens, text) {
+  const itemTokens = new Set(tokenizeText(text));
+  if (!promptTokens.size || !itemTokens.size) {
+    return 0;
+  }
+
+  let overlap = 0;
+  for (const token of promptTokens) {
+    if (itemTokens.has(token)) {
+      overlap += 1;
+    }
+  }
+
+  return overlap / Math.max(promptTokens.size, 1);
+}
+
+function stringifyMemoryItem(item) {
+  if (!item) return "";
+  const parts = [
+    item.address,
+    item.sourceNetwork,
+    item.prompt,
+    item.query,
+    item.lastAddress,
+    ...(Array.isArray(item.recentSignatures) ? item.recentSignatures.map((entry) => entry.signature || entry) : []),
+    ...(Array.isArray(item.transactions) ? item.transactions.flatMap((entry) => [
+      entry.signature,
+      entry.summary ? JSON.stringify(entry.summary) : "",
+      entry.err ? JSON.stringify(entry.err) : ""
+    ]) : []),
+    item.lookupSnapshot ? JSON.stringify(item.lookupSnapshot) : "",
+    item.explorerSnapshot ? JSON.stringify(item.explorerSnapshot) : ""
+  ];
+  return parts.filter(Boolean).join(" ");
+}
+
+function selectRelevantSolanaMemory(prompt, memory) {
+  const solana = memory?.solana || {};
+  const promptTokens = new Set(tokenizeText(prompt));
+  const candidates = [];
+
+  if (solana.lastTransactionBatch) {
+    candidates.push({
+      kind: "transaction-batch",
+      item: solana.lastTransactionBatch
+    });
+  }
+
+  if (Array.isArray(solana.recentLookups)) {
+    for (const entry of solana.recentLookups.slice(0, 10)) {
+      candidates.push({
+        kind: entry.transactionBatch ? "transaction-batch" : "lookup",
+        item: entry.transactionBatch || entry
+      });
+    }
+  }
+
+  let best = null;
+  for (const [index, candidate] of candidates.entries()) {
+    const text = stringifyMemoryItem(candidate.item);
+    const score = overlapScore(promptTokens, text);
+    const recency = Math.max(0, 1 - index * 0.08);
+    const address = candidate.item?.address || candidate.item?.lastAddress || null;
+    const exactAddressMatch = address && String(prompt).includes(String(address)) ? 1 : 0;
+    const total = score * 0.7 + recency * 0.2 + exactAddressMatch * 0.1;
+
+    if (!best || total > best.score) {
+      best = {
+        kind: candidate.kind,
+        item: candidate.item,
+        score: total
+      };
+    }
+  }
+
+  if (!best || best.score < 0.12) {
+    return null;
+  }
+
+  return best;
+}
+
+function findCachedLookupForAddress(address, memory) {
+  const solana = memory?.solana || {};
+  const candidates = [];
+
+  if (solana.lastTransactionBatch) {
+    candidates.push(solana.lastTransactionBatch);
+  }
+
+  if (Array.isArray(solana.recentLookups)) {
+    candidates.push(...solana.recentLookups);
+  }
+
+  const normalized = String(address || "");
+  return candidates.find((entry) => {
+    if (!entry) return false;
+    return String(entry.address || entry.lastAddress || "").toLowerCase() === normalized.toLowerCase();
+  }) || null;
+}
+
+function looksLikeSolanaEvidenceTask(text) {
+  const lower = String(text).toLowerCase();
+  return [
+    "wallet",
+    "account",
+    "address",
+    "pubkey",
+    "public key",
+    "signature",
+    "transaction",
+    "tx",
+    "token account",
+    "program",
+    "balance",
+    "portfolio",
+    "fees",
+    "activity",
+    "fishy",
+    "suspicious",
+    "scam",
+    "drain",
+    "drained",
+    "analysis"
+  ].some((phrase) => lower.includes(phrase));
+}
+
+function formatSolAmount(balance) {
+  if (!balance || typeof balance !== "object") {
+    return null;
+  }
+
+  const value = Number(balance.solBalance);
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+
+  return `${value.toFixed(9).replace(/\.?0+$/, "")} SOL`;
+}
+
 function isValidSolanaAddress(value) {
   if (!value) {
     return false;
@@ -162,6 +346,84 @@ function looksLikeSolanaLookupPrompt(prompt) {
     "summarize",
     "what is this"
   ].some((phrase) => text.includes(phrase));
+}
+
+function promptWantsFreshLookup(prompt) {
+  const text = String(prompt).toLowerCase();
+  return [
+    "fresh",
+    "refresh",
+    "latest",
+    "up to date",
+    "update me",
+    "recheck",
+    "re-check",
+    "again"
+  ].some((phrase) => text.includes(phrase));
+}
+
+function promptNeedsTransactionBatch(prompt) {
+  const text = String(prompt).toLowerCase();
+  return [
+    "recent transactions",
+    "last transactions",
+    "transaction history",
+    "history",
+    "activity pattern",
+    "activity patterns",
+    "token flow",
+    "token transfers",
+    "inspect each transaction",
+    "analyze each transaction",
+    "analyze each of the",
+    "review each transaction",
+    "compare transactions",
+    "fishy",
+    "suspicious",
+    "drain",
+    "drained",
+    "follow-up analysis"
+  ].some((phrase) => text.includes(phrase));
+}
+
+function preferredTransactionBatchSize(prompt, fallback = 3) {
+  const text = String(prompt).toLowerCase();
+  const match = text.match(/\b(?:last|most recent|recent|latest)\s+(\d{1,2})\b/);
+  const parsed = match ? Number(match[1]) : fallback;
+  return Math.max(1, Math.min(Number.isFinite(parsed) ? parsed : fallback, 5));
+}
+
+function cachedBatchMeetsRequest(batch, prompt) {
+  const required = preferredTransactionBatchSize(prompt, 3);
+  const count = Array.isArray(batch?.transactions) ? batch.transactions.length : 0;
+  return count >= required;
+}
+
+function selectSolanaCandidates(prompt, memory) {
+  const promptCandidates = extractSolanaCandidates(prompt);
+  const solana = memory?.solana || {};
+  const memoryCandidates = [];
+
+  if (solana.lastAddress) {
+    memoryCandidates.push(solana.lastAddress);
+  }
+
+  if (solana.lastTransactionBatch?.address) {
+    memoryCandidates.push(solana.lastTransactionBatch.address);
+  }
+
+  if (Array.isArray(solana.recentLookups)) {
+    for (const entry of solana.recentLookups.slice(0, 3)) {
+      if (entry?.address) {
+        memoryCandidates.push(entry.address);
+      }
+      if (entry?.lastAddress) {
+        memoryCandidates.push(entry.lastAddress);
+      }
+    }
+  }
+
+  return [...new Set([...promptCandidates, ...memoryCandidates].filter(Boolean))].slice(0, 2);
 }
 
 function shouldDirectLookup(prompt, target) {
@@ -222,6 +484,14 @@ function renderOutcome(outcome) {
   }
 }
 
+function isAbortError(error) {
+  return Boolean(error) && (
+    error.name === "AbortError" ||
+    error.code === "ABORT_ERR" ||
+    /cancelled by esc/i.test(String(error.message || ""))
+  );
+}
+
 export class OrionHarness {
   constructor({ rl, session, ollama, solana, voice, commandRegistry, toolRegistry, graphHarness, taskStore }) {
     this.rl = rl;
@@ -236,7 +506,9 @@ export class OrionHarness {
     this.watchDisposers = new Map();
     this.taskLoop = null;
     this.activeTaskId = null;
-    this.chromeHidden = false;
+    this.currentPromptController = null;
+    this.pendingQuestionController = null;
+    this.onKeypress = null;
   }
 
   static async create() {
@@ -308,6 +580,13 @@ export class OrionHarness {
 
   async runOnboarding() {
     await runOnboarding(this.context());
+    this.refreshRuntime();
+  }
+
+  refreshRuntime() {
+    this.ollama.refreshConfig?.();
+    this.graphHarness.ollamaBaseUrl = this.ollama.baseUrl || undefined;
+    this.graphHarness.model = this.session.state.model || this.ollama.model || this.graphHarness.model;
   }
 
   async executeCommand(line) {
@@ -324,23 +603,271 @@ export class OrionHarness {
     return outcome;
   }
 
+  async buildSolanaEvidence(text) {
+    const memory = this.session.getMemory ? this.session.getMemory() : (this.session.state.memory || {});
+    const relevantMemory = selectRelevantSolanaMemory(text, memory);
+    const candidates = selectSolanaCandidates(text, memory);
+    const needsTransactionBatch = Boolean(
+      relevantMemory?.kind === "transaction-batch" ||
+      promptNeedsTransactionBatch(text)
+    );
+    const batchLimit = preferredTransactionBatchSize(text, 3);
+    const targets = [];
+
+    if (relevantMemory?.kind === "transaction-batch" && relevantMemory.item && cachedBatchMeetsRequest(relevantMemory.item, text)) {
+      targets.push({
+        kind: "transaction-batch",
+        target: relevantMemory.item.address || null,
+        sourceNetwork: relevantMemory.item.sourceNetwork || this.session.state.network,
+        cached: true,
+        transactionBatch: relevantMemory.item
+      });
+    }
+
+    for (const candidate of candidates.slice(0, 2)) {
+      if (isValidSolanaAddress(candidate)) {
+        const reuseCachedBatch = relevantMemory?.kind === "transaction-batch"
+          && relevantMemory.item?.address === candidate;
+        if (reuseCachedBatch) {
+          targets.push({
+            kind: "address",
+            target: candidate,
+            sourceNetwork: relevantMemory.item.sourceNetwork || this.session.state.network,
+            lookupSnapshot: relevantMemory.item.lookupSnapshot || null,
+            explorerSnapshot: relevantMemory.item.explorerSnapshot || null,
+            transactionBatch: relevantMemory.item,
+            cached: true
+          });
+          continue;
+        }
+
+        const cachedLookup = findCachedLookupForAddress(candidate, memory);
+        const useCachedLookup = Boolean(
+          cachedLookup &&
+          !promptWantsFreshLookup(text) &&
+          (
+            cachedLookup.lookupSnapshot ||
+            cachedLookup.balance ||
+            cachedLookup.account ||
+            cachedLookup.recentSignatures
+          )
+        );
+        const lookupSnapshot = useCachedLookup
+          ? cachedLookup.lookupSnapshot || {
+              address: candidate,
+              sourceNetwork: cachedLookup.sourceNetwork || this.session.state.network,
+              account: cachedLookup.account || null,
+              balance: cachedLookup.balance || null,
+              recentSignatures: cachedLookup.recentSignatures || []
+            }
+        : await this.solana.getLookupSnapshot(candidate, { limit: batchLimit }).catch(() => null);
+        const explorerPromise = useCachedLookup
+          ? Promise.resolve(cachedLookup.explorerSnapshot || null)
+          : lookupSnapshot?.sourceNetwork === "mainnet-beta" && this.solana.solscanApiKey
+            ? this.solana.getExplorerSnapshot(candidate, { limit: batchLimit }).catch(() => null)
+            : Promise.resolve(null);
+        let transactionBatch = null;
+        const batchPromise = needsTransactionBatch && Array.isArray(lookupSnapshot?.recentSignatures) && lookupSnapshot.recentSignatures.length
+          ? Promise.all(lookupSnapshot.recentSignatures.slice(0, batchLimit).map(async (entry) => ({
+              signature: entry.signature,
+              slot: entry.slot,
+              confirmationStatus: entry.confirmationStatus || null,
+              blockTime: entry.blockTime || null,
+              err: entry.err || null,
+              summary: await this.solana.getTransactionSummary(entry.signature).catch(() => null)
+            })))
+          : Promise.resolve(null);
+        const [explorerSnapshot, batchTransactions] = await Promise.all([explorerPromise, batchPromise]);
+        if (Array.isArray(batchTransactions) && batchTransactions.length) {
+          const signatures = lookupSnapshot.recentSignatures.slice(0, batchLimit);
+          transactionBatch = {
+            address: candidate,
+            sourceNetwork: lookupSnapshot?.sourceNetwork || this.session.state.network,
+            signatures,
+            transactions: batchTransactions,
+            lookupSnapshot,
+            explorerSnapshot
+          };
+          if (this.session.rememberTransactionBatch) {
+            this.session.rememberTransactionBatch({
+              ...transactionBatch,
+              prompt: text
+            });
+          }
+          if (this.session.rememberSolanaLookup) {
+            this.session.rememberSolanaLookup({
+              address: candidate,
+              sourceNetwork: lookupSnapshot?.sourceNetwork || this.session.state.network,
+              lookupSnapshot,
+              explorerSnapshot,
+              recentSignatures: signatures,
+              transactionBatch
+            });
+          }
+        }
+        if (useCachedLookup && !transactionBatch) {
+          transactionBatch = cachedLookup.transactionBatch || null;
+        }
+        targets.push({
+          kind: "address",
+          target: candidate,
+          sourceNetwork: lookupSnapshot?.sourceNetwork || this.session.state.network,
+          lookupSnapshot,
+          explorerSnapshot,
+          transactionBatch
+        });
+        continue;
+      }
+
+      if (isLikelySolanaSignature(candidate)) {
+        const transactionActions = this.solana.solscanApiKey
+          ? await this.solana.getSolscanTransactionActions(candidate).catch(() => null)
+          : null;
+        const transactionDetail = this.solana.solscanApiKey && !transactionActions
+          ? await this.solana.getSolscanTransactionDetail(candidate).catch(() => null)
+          : transactionActions;
+        const rpcTransaction = !transactionDetail
+          ? await this.solana.getTransactionSummary(candidate).catch(() => null)
+          : null;
+        targets.push({
+          kind: "signature",
+          target: candidate,
+          sourceNetwork: this.session.state.network,
+          transactionActions,
+          transactionDetail,
+          rpcTransaction
+        });
+      }
+    }
+
+    return {
+      recentConversation: (this.session.state.history || []).slice(-4).map((entry) => ({
+        role: entry.role,
+        content: String(entry.content || "").slice(0, 300)
+      })),
+      memory: relevantMemory ? {
+        kind: relevantMemory.kind,
+        score: Number(relevantMemory.score.toFixed(3)),
+        item: relevantMemory.item
+      } : null,
+      targets
+    };
+  }
+
   async executePrompt(prompt) {
     const target = extractSolanaCandidate(prompt);
-    let plan;
+    const memory = this.session.getMemory ? this.session.getMemory() : (this.session.state.memory || {});
+    const relevantMemory = selectRelevantSolanaMemory(prompt, memory);
+    const promptController = new AbortController();
+    this.currentPromptController = promptController;
+    const directTargetLookup = Boolean(
+      target &&
+      shouldDirectLookup(prompt, target) &&
+      (isValidSolanaAddress(target) || isLikelySolanaSignature(target))
+    );
+
     try {
-      plan = await withSpinner(
-        () => this.graphHarness.decomposePrompt(this.context(), prompt),
-        { message: "planning reply" }
+      const cachedBatchCandidate = !target &&
+        relevantMemory?.kind === "transaction-batch" &&
+        promptNeedsTransactionBatch(prompt) &&
+        relevantMemory.item &&
+        Array.isArray(relevantMemory.item.transactions) &&
+        cachedBatchMeetsRequest(relevantMemory.item, prompt)
+          ? relevantMemory.item
+          : null;
+
+      if (cachedBatchCandidate) {
+      printStep("1/3", "Reusing cached transaction batch");
+      printStepDetail(
+        `address  ${cachedBatchCandidate.address || relevantMemory.item.lastAddress || "unknown"}`,
+        `network  ${cachedBatchCandidate.sourceNetwork || this.session.state.network}`,
+        `source  session cache`
       );
-    } catch {
-      plan = {
-        mode: "answer",
-        title: "Direct answer",
-        summary: "Planning fell back to a direct answer.",
-        needsBackground: false,
-        steps: [{ title: "Answer directly", goal: prompt }]
+
+      const summaryInput = {
+        prompt,
+        target: cachedBatchCandidate.address || relevantMemory.item.lastAddress || null,
+        kind: "address",
+        sourceNetwork: cachedBatchCandidate.sourceNetwork || this.session.state.network,
+        explorer: cachedBatchCandidate.explorerSnapshot || null,
+        transactionActions: null,
+        transactionDetail: null,
+        rpcTransaction: null,
+        account: cachedBatchCandidate.lookupSnapshot?.account || null,
+        balance: cachedBatchCandidate.lookupSnapshot?.balance || null,
+        recentSignatures: cachedBatchCandidate.signatures || cachedBatchCandidate.lookupSnapshot?.recentSignatures || [],
+        recentTransactions: cachedBatchCandidate.transactions || []
       };
-    }
+
+      printStep("2/3", "Summarizing the cached snapshot through the harness");
+      printStepDetail(
+        `model  ${this.session.state.model}`,
+        "mode  cached transaction batch"
+      );
+
+      const lookupPrompt = [
+        `User request: ${prompt}`,
+        `Target: ${summaryInput.target}`,
+        "Source: cached transaction batch from the current session.",
+        "Summarize only the provided evidence.",
+        JSON.stringify(summaryInput)
+      ].join("\n");
+
+      this.graphHarness.model = this.session.state.model;
+      const startedAt = Date.now();
+      const response = await withSpinner(
+        () => this.graphHarness.runPrompt(this.context(), lookupPrompt, {
+          mode: "lookup",
+          useTools: false,
+          signal: this.currentPromptController?.signal
+        }),
+        { message: "summarizing cached snapshot" }
+      );
+      const elapsedMs = Date.now() - startedAt;
+      this.session.appendHistory("user", prompt);
+      this.session.appendHistory("assistant", response);
+      if (summaryInput.target) {
+        this.session.rememberSolanaLookup({
+          address: summaryInput.target,
+          sourceNetwork: summaryInput.sourceNetwork,
+          lookupSnapshot: cachedBatchCandidate.lookupSnapshot || null,
+          explorerSnapshot: cachedBatchCandidate.explorerSnapshot || null,
+          balance: summaryInput.balance,
+          account: summaryInput.account,
+          recentSignatures: summaryInput.recentSignatures,
+          transactionBatch: cachedBatchCandidate
+        });
+      }
+      await this.session.save();
+        printAssistant(response, { model: this.session.state.model, elapsedMs, compact: true });
+        return;
+      }
+
+      let plan;
+      try {
+        if (directTargetLookup) {
+          plan = {
+            mode: "lookup",
+            title: "Direct lookup",
+            summary: "Skipping planning for a direct Solana lookup.",
+            needsBackground: false,
+            steps: [{ title: "Fetch snapshot", goal: prompt }]
+          };
+        } else {
+          plan = await withSpinner(
+            () => this.graphHarness.decomposePrompt(this.context(), prompt),
+            { message: "planning reply" }
+          );
+        }
+      } catch {
+        plan = {
+          mode: "answer",
+          title: "Direct answer",
+          summary: "Planning fell back to a direct answer.",
+          needsBackground: false,
+          steps: [{ title: "Answer directly", goal: prompt }]
+        };
+      }
 
     const planSteps = Array.isArray(plan.steps) && plan.steps.length ? plan.steps : [{ title: "Answer directly", goal: prompt }];
     const resolvedLookup = shouldDirectLookup(prompt, target) && (isValidSolanaAddress(target) || isLikelySolanaSignature(target));
@@ -352,7 +879,7 @@ export class OrionHarness {
       );
     }
 
-    if (plan.mode === "watch") {
+      if (plan.mode === "watch") {
       const watchAnalysis = classifyLongHorizon(prompt);
       const watchTarget =
         extractSolanaCandidate(prompt) ||
@@ -390,10 +917,10 @@ export class OrionHarness {
         `Target: ${task.target}`,
         "Orion will keep this watch alive and react to matching Solana events."
       ]);
-      return;
-    }
+        return;
+      }
 
-    if (resolvedLookup) {
+      if (resolvedLookup) {
       const isAddress = isValidSolanaAddress(target);
       const isSignature = isLikelySolanaSignature(target);
 
@@ -410,13 +937,74 @@ export class OrionHarness {
       }
 
       printStep("1/3", isAddress ? "Classifying target as a wallet address" : "Classifying target as a transaction signature");
+      printStepDetail(
+        isAddress ? `address  ${target}` : `signature  ${target.slice(0, 20)}…${target.slice(-8)}`,
+        `network  ${this.session.state.network}`
+      );
 
-      const lookupSnapshot = isAddress
-        ? await this.solana.getLookupSnapshot(target, { limit: 10 }).catch(() => null)
-        : null;
-      const explorerSnapshot = lookupSnapshot?.sourceNetwork === "mainnet-beta" && this.solana.solscanApiKey
-        ? await this.solana.getExplorerSnapshot(target, { limit: 10 }).catch(() => null)
-        : null;
+      const cachedLookup = isAddress ? findCachedLookupForAddress(target, memory) : null;
+      const useCachedLookup = Boolean(
+        isAddress &&
+        cachedLookup &&
+        !promptWantsFreshLookup(prompt) &&
+        (
+          cachedLookup.lookupSnapshot ||
+          cachedLookup.balance ||
+          cachedLookup.account ||
+          cachedLookup.recentSignatures
+        )
+      );
+      const batchLimit = preferredTransactionBatchSize(prompt, 3);
+      const lookupSnapshot = useCachedLookup
+        ? cachedLookup.lookupSnapshot || {
+            address: target,
+            sourceNetwork: cachedLookup.sourceNetwork || this.session.state.network,
+            account: cachedLookup.account || null,
+            balance: cachedLookup.balance || null,
+            recentSignatures: cachedLookup.recentSignatures || []
+          }
+        : isAddress
+          ? await this.solana.getLookupSnapshot(target, { limit: batchLimit }).catch(() => null)
+          : null;
+      const explorerSnapshot = useCachedLookup
+        ? cachedLookup.explorerSnapshot || null
+        : lookupSnapshot?.sourceNetwork === "mainnet-beta" && this.solana.solscanApiKey
+          ? await this.solana.getExplorerSnapshot(target, { limit: batchLimit }).catch(() => null)
+          : null;
+      const useCachedTransactionBatch = isAddress
+        && relevantMemory?.kind === "transaction-batch"
+        && relevantMemory.item?.address === target
+        && Array.isArray(relevantMemory.item?.transactions)
+        && cachedBatchMeetsRequest(relevantMemory.item, prompt);
+      let transactionBatch = useCachedTransactionBatch ? relevantMemory.item : null;
+      if (useCachedTransactionBatch) {
+        this.session.rememberTransactionBatch({
+          ...relevantMemory.item,
+          prompt
+        });
+      } else if (isAddress && (relevantMemory || looksLikeSolanaEvidenceTask(prompt)) && Array.isArray(lookupSnapshot?.recentSignatures) && lookupSnapshot.recentSignatures.length) {
+        const signatures = lookupSnapshot.recentSignatures.slice(0, batchLimit);
+        const transactions = await Promise.all(signatures.map(async (entry) => ({
+          signature: entry.signature,
+          slot: entry.slot,
+          confirmationStatus: entry.confirmationStatus || null,
+          blockTime: entry.blockTime || null,
+          err: entry.err || null,
+          summary: await this.solana.getTransactionSummary(entry.signature).catch(() => null)
+        })));
+        transactionBatch = {
+          address: target,
+          sourceNetwork: lookupSnapshot?.sourceNetwork || this.session.state.network,
+          signatures,
+          transactions,
+          lookupSnapshot,
+          explorerSnapshot
+        };
+        this.session.rememberTransactionBatch({
+          ...transactionBatch,
+          prompt
+        });
+      }
       const transactionActions = isSignature && this.solana.solscanApiKey
         ? await this.solana.getSolscanTransactionActions(target).catch(() => null)
         : null;
@@ -428,10 +1016,23 @@ export class OrionHarness {
         : null;
       const account = isAddress ? lookupSnapshot?.account || null : null;
       const balance = isAddress ? lookupSnapshot?.balance || null : null;
-      const signatures = isAddress ? lookupSnapshot?.recentSignatures || [] : [];
+      const signatures = isAddress ? lookupSnapshot?.recentSignatures?.slice(0, batchLimit) || [] : [];
       printStep("2/3", this.solana.solscanApiKey
         ? (isAddress ? "Fetching Solscan account snapshot" : "Fetching Solscan transaction summary")
         : (isAddress ? "Fetching Solana RPC account snapshot" : "Fetching Solana RPC transaction summary"));
+      if (isAddress) {
+        printStepDetail(
+          `source  ${useCachedLookup ? "session cache" : this.solana.solscanApiKey ? "Solscan Pro" : "Solana RPC"}`,
+          balance != null ? `balance  ${formatSolAmount(balance) || "pending"}` : "balance  pending",
+          signatures.length ? `signatures  ${signatures.length} retrieved` : "signatures  none found",
+          transactionBatch?.transactions?.length ? `transactions  ${transactionBatch.transactions.length} cached for follow-up analysis` : ""
+        );
+      } else {
+        printStepDetail(
+          `source  ${this.solana.solscanApiKey ? "Solscan Pro" : "Solana RPC"}`,
+          transactionDetail ? "detail  loaded" : rpcTransaction ? "detail  rpc fallback" : "detail  unavailable"
+        );
+      }
       const summaryInput = {
         prompt,
         target,
@@ -443,24 +1044,27 @@ export class OrionHarness {
         rpcTransaction,
         account,
         balance,
-        recentSignatures: signatures
+        recentSignatures: signatures,
+        recentTransactions: transactionBatch?.transactions || null
       };
 
       printStep("3/3", "Summarizing the prefetched snapshot through the harness");
+      printStepDetail(
+        `model  ${this.session.state.model}`,
+        transactionDetail ? "mode  transaction summary" : explorerSnapshot ? "mode  explorer snapshot" : "mode  rpc snapshot"
+      );
 
       const lookupPrompt = [
-        "Summarize this Solana target snapshot for the operator.",
-        "Do not call tools. Use only the provided data.",
-        transactionDetail
-          ? "Primary source: Solscan transaction detail/actions."
-          : explorerSnapshot
-            ? "Primary source: Solscan Pro API snapshot."
-            : "Primary source: Solana RPC snapshot.",
-        transactionDetail ? "This is a transaction signature lookup. Explain the transaction clearly." : "",
         `User request: ${prompt}`,
         `Target: ${target}`,
-        "Snapshot JSON:",
-        JSON.stringify(summaryInput, null, 2)
+        transactionDetail
+          ? "Source: Solscan transaction detail/actions."
+          : explorerSnapshot
+            ? "Source: Solscan Pro API snapshot."
+            : "Source: Solana RPC snapshot.",
+        transactionBatch?.transactions?.length ? "Cached recent transactions are included." : "",
+        "Summarize only the provided evidence.",
+        JSON.stringify(summaryInput)
       ].filter(Boolean).join("\n");
 
       let response;
@@ -470,7 +1074,8 @@ export class OrionHarness {
           () =>
             this.graphHarness.runPrompt(this.context(), lookupPrompt, {
               mode: "lookup",
-              useTools: false
+              useTools: false,
+              signal: this.currentPromptController?.signal
             }),
           { message: transactionDetail ? "summarizing transaction snapshot" : "summarizing account snapshot" }
         );
@@ -486,53 +1091,167 @@ export class OrionHarness {
 
       this.session.appendHistory("user", prompt);
       this.session.appendHistory("assistant", response);
+      if (isAddress) {
+        this.session.rememberSolanaLookup({
+          address: target,
+          sourceNetwork: lookupSnapshot?.sourceNetwork || this.session.state.network,
+          lookupSnapshot,
+          explorerSnapshot,
+          balance,
+          account,
+          recentSignatures: signatures,
+          transactionBatch
+        });
+      }
       await this.session.save();
-      printAssistant(response, { model: this.session.state.model });
-      return;
-    }
+      printAssistant(response, { model: this.session.state.model, compact: true });
+        return;
+      }
 
-    if (plan.needsBackground || plan.mode === "task" || planSteps.length > 1) {
-      const task = await this.queueTask(prompt, plan);
+      if (plan.needsBackground || plan.mode === "task" || planSteps.length > 1) {
+        await this.executeInlineSteps(prompt, plan);
+        return;
+      }
+
+      this.graphHarness.model = this.session.state.model;
+      const startedAt = Date.now();
+      const response = await withSpinner(
+        () => this.graphHarness.runPrompt(this.context(), prompt, {
+          signal: this.currentPromptController?.signal
+        }),
+        { message: "thinking through reply" }
+      );
+      const elapsedMs = Date.now() - startedAt;
+
       this.session.appendHistory("user", prompt);
-      this.session.appendHistory("assistant", `Queued a durable task: ${task.title}.`);
+      this.session.appendHistory("assistant", response);
       await this.session.save();
-      printNotice(`Queued background task ${task.id.slice(0, 8)}.`);
-      printPanel("Queued Task", [
-        `Task: ${task.id}`,
-        `Title: ${task.title}`,
-        `Plan: ${planSteps.length} step${planSteps.length === 1 ? "" : "s"}`,
-        ...planSteps.slice(0, 4).map((step, index) => `${index + 1}. ${step.title}`),
-        "Orion will work this in the background, split it into steps, try tools as needed, and surface progress later in this terminal."
-      ]);
-      return;
+      printAssistant(response, { model: this.session.state.model, elapsedMs });
+    } finally {
+      if (this.currentPromptController === promptController) {
+        this.currentPromptController = null;
+      }
+    }
+  }
+
+  async executeInlineSteps(prompt, plan) {
+    const steps = Array.isArray(plan?.steps) && plan.steps.length
+      ? plan.steps
+      : [{ title: "Answer directly", goal: prompt }];
+
+    // Pull Solana addresses from recent history so steps never ask for what's already known
+    const recentText = (this.session.state.history || []).slice(-6)
+      .map(m => String(m.content || "")).join(" ") + " " + prompt;
+    const recentAddresses = [...new Set((recentText.match(/\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/g) || []))];
+    const addressContext = recentAddresses.length
+      ? `Addresses already in context (use these, do not ask the user): ${recentAddresses.join(", ")}`
+      : "";
+
+    // Build a readable conversation summary for steps that need prior context
+    const historyContext = (this.session.state.history || []).slice(-4)
+      .map(m => `${m.role === "user" ? "User" : "Assistant"}: ${String(m.content || "").slice(0, 300)}`)
+      .join("\n");
+    const taskEvidence = await this.buildSolanaEvidence(`${prompt}\n${steps.map((step) => `${step.title}\n${step.goal || ""}`).join("\n")}`).catch(() => ({ recentConversation: [], targets: [] }));
+
+    const stepResults = [];
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      printStep(`${i + 1}/${steps.length}`, step.title);
+      if (step.goal && step.goal !== step.title) printStepDetail(step.goal);
+      if (addressContext) printStepDetail(addressContext.replace("Addresses already in context (use these, do not ask the user): ", "addresses  "));
+
+      const stepPrompt = [
+        `Original goal: ${prompt}`,
+        historyContext ? `Recent conversation:\n${historyContext}` : "",
+        addressContext,
+        `Step ${i + 1}/${steps.length}: ${step.title}`,
+        `Step goal: ${step.goal || step.title}`,
+        taskEvidence.targets.length ? `Evidence JSON:\n${JSON.stringify(taskEvidence, null, 2)}` : "",
+        stepResults.length
+          ? `Context from prior steps:\n${stepResults.map((r, idx) => `${idx + 1}. ${r.title}: ${r.response.slice(0, 300)}`).join("\n")}`
+          : "",
+        taskEvidence.targets.length
+          ? "Focus only on this step. Use the prefetched evidence above. Do NOT call tools."
+          : "Focus only on this step. Return a concrete result. Do NOT ask the user for information — use what is already provided above."
+      ].filter(Boolean).join("\n\n");
+
+      try {
+        this.graphHarness.model = this.session.state.model;
+        const response = await withSpinner(
+          () => this.graphHarness.runPrompt(this.context(), stepPrompt, {
+            mode: "task",
+            useTools: taskEvidence.targets.length === 0,
+            recursionLimit: taskEvidence.targets.length ? 12 : config.graphRecursionLimit,
+            signal: this.currentPromptController?.signal
+          }),
+          { message: step.title }
+        );
+        const brief = response.split("\n").find(l => l.trim()) || "";
+        if (brief) printStepDetail(brief.length > 100 ? brief.slice(0, 100) + "…" : brief);
+        stepResults.push({ title: step.title, response });
+      } catch (err) {
+        printError(new Error(`Step ${i + 1} failed: ${err.message}`));
+        stepResults.push({ title: step.title, response: `Step failed: ${err.message}` });
+      }
     }
 
-    this.graphHarness.model = this.session.state.model;
-    const startedAt = Date.now();
-    const response = await withSpinner(
-      () => this.graphHarness.runPrompt(this.context(), prompt),
-      { message: "thinking through reply" }
-    );
-    const elapsedMs = Date.now() - startedAt;
+    let finalResponse;
+    if (stepResults.length === 1) {
+      finalResponse = stepResults[0].response;
+    } else {
+      const synthesisPrompt = [
+        `Original goal: ${prompt}`,
+        addressContext,
+        taskEvidence.targets.length ? `Evidence JSON:\n${JSON.stringify(taskEvidence, null, 2)}` : "",
+        "Step results:",
+        ...stepResults.map((r, i) => `${i + 1}. ${r.title}:\n${r.response}`)
+      ].filter(Boolean).join("\n");
+      try {
+        this.graphHarness.model = this.session.state.model;
+        finalResponse = await withSpinner(
+          () => this.graphHarness.runPrompt(this.context(), synthesisPrompt, {
+            mode: "task",
+            useTools: false,
+            recursionLimit: 8,
+            signal: this.currentPromptController?.signal
+          }),
+          { message: "synthesizing" }
+        );
+      } catch {
+        finalResponse = stepResults.map(r => `${r.title}:\n${r.response}`).join("\n\n");
+      }
+    }
 
     this.session.appendHistory("user", prompt);
-    this.session.appendHistory("assistant", response);
+    this.session.appendHistory("assistant", finalResponse);
     await this.session.save();
-    printAssistant(response, { model: this.session.state.model, elapsedMs });
+    printAssistant(finalResponse, { model: this.session.state.model, compact: false });
   }
 
   async executeTask(prompt) {
-    this.graphHarness.model = this.session.state.model;
-    const task = await withSpinner(
-      () => this.graphHarness.runTask(this.context(), prompt),
-      { message: "working through task" }
-    );
-    const lines = task.updates.map((update, index) => `step ${index + 1}: ${JSON.stringify(update)}`);
-    printPanel("Task Progress", lines.length ? lines : ["No streamed updates captured."]);
-    this.session.appendHistory("user", `task: ${prompt}`);
-    this.session.appendHistory("assistant", task.response);
-    await this.session.save();
-    printAssistant(task.response);
+    const taskController = new AbortController();
+    this.currentPromptController = taskController;
+    try {
+      this.graphHarness.model = this.session.state.model;
+      const task = await withSpinner(
+        () => this.graphHarness.runTask(this.context(), prompt, {
+          threadId: `orion-task-${this.session.state.sessionId || "session"}`,
+          recursionLimit: config.graphRecursionLimit,
+          signal: this.currentPromptController?.signal
+        }),
+        { message: "working through task" }
+      );
+      const lines = task.updates.map((update, index) => `step ${index + 1}: ${JSON.stringify(update)}`);
+      printPanel("Task Progress", lines.length ? lines : ["No streamed updates captured."]);
+      this.session.appendHistory("user", `task: ${prompt}`);
+      this.session.appendHistory("assistant", task.response);
+      await this.session.save();
+      printAssistant(task.response);
+    } finally {
+      if (this.currentPromptController === taskController) {
+        this.currentPromptController = null;
+      }
+    }
   }
 
   async queueTask(prompt, plan = null) {
@@ -638,6 +1357,7 @@ export class OrionHarness {
         ? nextTask.steps
         : [{ title: "Answer directly", goal: nextTask.prompt }];
       const stepResults = [];
+      const taskEvidence = await this.buildSolanaEvidence(`${nextTask.prompt}\n${stepPlan.map((step) => `${step.title}\n${step.goal || ""}`).join("\n")}`).catch(() => ({ recentConversation: [], targets: [] }));
 
       for (let i = 0; i < stepPlan.length; i += 1) {
         const step = stepPlan[i];
@@ -646,10 +1366,13 @@ export class OrionHarness {
           `Original goal: ${nextTask.prompt}`,
           `Current step ${stepIndex}/${stepPlan.length}: ${step.title}`,
           `Step goal: ${step.goal}`,
+          taskEvidence.targets.length ? `Evidence JSON:\n${JSON.stringify(taskEvidence, null, 2)}` : "",
           stepResults.length
             ? `Previous step summaries:\n${stepResults.map((entry, index) => `${index + 1}. ${entry.title}: ${entry.response}`).join("\n")}`
             : "",
-          "Work only on this step. Return a concrete result for the step before moving on."
+          taskEvidence.targets.length
+            ? "Work only on this step. Use the prefetched evidence above. Do NOT call tools."
+            : "Work only on this step. Return a concrete result for the step before moving on."
         ].filter(Boolean).join("\n\n");
 
         printStep("task", `${nextTask.id.slice(0, 8)} step ${stepIndex}/${stepPlan.length} · ${step.title}`);
@@ -665,6 +1388,7 @@ export class OrionHarness {
 
         const result = await this.graphHarness.runTask(this.context(), stepPrompt, {
           threadId: `${nextTask.threadId}-step-${stepIndex}`,
+          recursionLimit: taskEvidence.targets.length ? 12 : config.graphRecursionLimit,
           onUpdate: async (update) => {
             await this.taskStore.appendHistory(nextTask.id, {
               type: "update",
@@ -696,6 +1420,7 @@ export class OrionHarness {
       const synthesisPrompt = [
         `Original goal: ${nextTask.prompt}`,
         `Task plan: ${JSON.stringify(stepPlan, null, 2)}`,
+        taskEvidence.targets.length ? `Evidence JSON:\n${JSON.stringify(taskEvidence, null, 2)}` : "",
         `Step results: ${JSON.stringify(stepResults.map((entry) => ({ title: entry.title, response: entry.response })), null, 2)}`,
         "Summarize exactly what was done, what was learned, and what the user should do next. Be concise and concrete."
       ].join("\n\n");
@@ -704,7 +1429,8 @@ export class OrionHarness {
             updates: stepResults.flatMap((entry) => entry.updates || []),
             response: await this.graphHarness.runPrompt(this.context(), synthesisPrompt, {
               mode: "task",
-              useTools: false
+              useTools: false,
+              recursionLimit: 8
             })
           }
         : stepResults[0];
@@ -766,15 +1492,16 @@ export class OrionHarness {
       if (task.prompt) {
         await this.taskStore.update(task.id, { status: "running" });
         try {
-          const result = await this.graphHarness.runTask(
-            this.context(),
-            `${task.prompt}\n\nWatch event payload:\n${JSON.stringify(payload, null, 2)}`,
-            {
-              threadId: task.threadId,
-              onUpdate: async (update) => {
-                await this.taskStore.appendHistory(task.id, {
-                  type: "analysis",
-                  payload: update
+        const result = await this.graphHarness.runTask(
+          this.context(),
+          `${task.prompt}\n\nWatch event payload:\n${JSON.stringify(payload, null, 2)}`,
+          {
+            threadId: task.threadId,
+            signal: this.currentPromptController?.signal,
+            onUpdate: async (update) => {
+              await this.taskStore.appendHistory(task.id, {
+                type: "analysis",
+                payload: update
                 });
               }
             }
@@ -841,36 +1568,64 @@ export class OrionHarness {
   }
 
   async loop() {
+    emitKeypressEvents(input);
+    if (input.isTTY && typeof input.setRawMode === "function") {
+      input.setRawMode(true);
+    }
+
+    this.onKeypress = (_str, key) => {
+      if (key?.name !== "escape") {
+        return;
+      }
+
+      if (this.currentPromptController && !this.currentPromptController.signal.aborted) {
+        this.currentPromptController.abort(new Error("Cancelled by Esc"));
+        return;
+      }
+
+      if (this.pendingQuestionController && !this.pendingQuestionController.signal.aborted) {
+        this.pendingQuestionController.abort(new Error("Cancelled by Esc"));
+      }
+    };
+    input.on("keypress", this.onKeypress);
+
     this.rl.on("SIGINT", () => {
       output.write("\n");
       this.rl.write(null, { ctrl: true, name: "u" });
     });
 
     while (true) {
-      if (!this.chromeHidden) {
-        output.write(`\n${turnHeader(this.session.state)}\n`);
-        output.write(`${promptRule()}\n`);
-        output.write(`${turnFooterHint()}\n`);
-      }
+      output.write(`\n${turnHeader(this.session.state, { ollamaBaseUrl: this.ollama?.baseUrl })}\n`);
+      output.write(`${promptRule(this.session.state.network)}\n`);
+
+      // Pre-draw bottom chrome below where ❯ will appear, then reposition cursor up
+      output.write(`\n${rule(C.border)}\n${turnFooterHint()}\n`);
+      output.write("\x1b[3A\r");
 
       let line;
+      this.pendingQuestionController = new AbortController();
       try {
-        line = await this.rl.question(promptMarker());
+        line = await this.rl.question(promptMarker(), {
+          signal: this.pendingQuestionController.signal
+        });
       } catch {
         line = "";
+      } finally {
+        this.pendingQuestionController = null;
       }
+
+      // After Enter, cursor is at the bottom rule line. Erase bottom chrome + readline echo.
+      output.write("\r\x1b[2K");           // clear bottom rule line
+      output.write("\x1b[B\r\x1b[2K");    // cursor down → clear hint line
+      output.write("\x1b[B\r\x1b[2K");    // cursor down → clear trailing blank
+      output.write("\x1b[3A\r\x1b[2K");   // cursor up 3 → clear readline echo line
 
       const trimmed = line.trim();
       if (!trimmed) {
         continue;
       }
-      if (!this.chromeHidden) {
-        output.write("\x1b[2J\x1b[H");
-        this.chromeHidden = true;
-      }
-      output.write("\n");
+
       printUserEcho(trimmed);
-      output.write("\n");
 
       try {
         if (trimmed.startsWith("/")) {
@@ -884,12 +1639,23 @@ export class OrionHarness {
 
         await this.executePrompt(trimmed);
       } catch (error) {
+        if (isAbortError(error)) {
+          printNotice("Prompt cancelled.");
+          continue;
+        }
         printError(error);
       }
     }
   }
 
   async close() {
+    if (this.onKeypress) {
+      input.off("keypress", this.onKeypress);
+      this.onKeypress = null;
+    }
+    if (input.isTTY && typeof input.setRawMode === "function") {
+      input.setRawMode(false);
+    }
     if (this.taskLoop) {
       clearInterval(this.taskLoop);
       this.taskLoop = null;

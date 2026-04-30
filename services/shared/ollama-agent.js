@@ -52,15 +52,25 @@ async function postJson(baseUrl, pathname, body) {
 
 export class OllamaAgentClient {
   constructor() {
+    this.refreshConfig();
+  }
+
+  refreshConfig() {
     this.baseUrl = config.ollamaBaseUrl;
+    this.model = config.ollamaModel;
+    this.apiKey = config.ollamaApiKey;
+    this.required = config.ollamaRequired;
+    this.timeoutMs = config.ollamaTimeoutMs;
+    return this;
   }
 
   ensureConfigured() {
-    if (!config.ollamaRequired) {
+    this.refreshConfig();
+    if (!this.required) {
       return false;
     }
 
-    if (!config.ollamaBaseUrl || !config.ollamaModel) {
+    if (!this.baseUrl || !this.model) {
       throw new Error("Ollama configuration is incomplete");
     }
 
@@ -68,9 +78,10 @@ export class OllamaAgentClient {
   }
 
   async checkHealth() {
+    this.refreshConfig();
     const isRemote = /^https?:\/\/(?!(127\.0\.0\.1|localhost))/i.test(this.baseUrl);
-    const headers = config.ollamaApiKey
-      ? { Authorization: `Bearer ${config.ollamaApiKey}` }
+    const headers = this.apiKey
+      ? { Authorization: `Bearer ${this.apiKey}` }
       : undefined;
     try {
       const response = await fetch(`${this.baseUrl}/api/tags`, { headers });
@@ -97,9 +108,10 @@ export class OllamaAgentClient {
   }
 
   async chat({ system, prompt, format, model = config.ollamaModel }) {
+    this.refreshConfig();
     this.ensureConfigured();
     const payload = await postJson(this.baseUrl, "/api/chat", {
-      model,
+      model: model || this.model,
       stream: false,
       format,
       messages: [
@@ -118,6 +130,7 @@ export class OllamaAgentClient {
   }
 
   async getDecision(input, options = {}) {
+    this.refreshConfig();
     if (!this.ensureConfigured()) {
       return {
         action: "hold",
@@ -132,7 +145,7 @@ export class OllamaAgentClient {
         "You are ORION AI, a Solana DeFi copilot. Return only valid JSON with exactly these fields: action, amount, reason, confidence. action must be one of stake, swap, hold. confidence must be a number from 0 to 1. Never suggest an amount above portfolio.maxAllocatableSol.",
       prompt: JSON.stringify(input),
       format: "json",
-      model: options.model
+      model: options.model || this.model
     });
 
     const parsed = safeParseJson(content, decisionFallback);
@@ -145,6 +158,7 @@ export class OllamaAgentClient {
   }
 
   async askOperator(input, options = {}) {
+    this.refreshConfig();
     if (!this.ensureConfigured()) {
       return "Ollama is unavailable right now.";
     }
@@ -153,11 +167,12 @@ export class OllamaAgentClient {
       system:
         "You are ORION, a terminal-based Solana operator assistant. Be concise, practical, and command-aware. Prioritize wallet inspection, RPC awareness, transaction explanation, and repository-oriented reasoning. Do not claim actions were executed unless the context explicitly says so.",
       prompt: JSON.stringify(input),
-      model: options.model
+      model: options.model || this.model
     });
   }
 
   async rewriteFile({ filePath, currentContent, instruction, workspaceContext, model }) {
+    this.refreshConfig();
     if (!this.ensureConfigured()) {
       throw new Error("Ollama is unavailable right now.");
     }
@@ -172,7 +187,7 @@ export class OllamaAgentClient {
         currentContent
       }),
       format: "json",
-      model
+      model: model || this.model
     });
 
     return safeParseJson(content, (raw) => ({

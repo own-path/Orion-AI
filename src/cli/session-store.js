@@ -1,8 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { config } from "../../services/shared/config.js";
+import { estimateTokens } from "./ui.js";
 
 const defaultState = {
+  sessionId: randomUUID(),
   onboardingDone: false,
   currentWallet: null,
   currentStrategy: "balanced",
@@ -11,7 +14,16 @@ const defaultState = {
   network: config.solanaNetwork,
   model: config.ollamaModel,
   workspace: process.cwd(),
-  history: []
+  history: [],
+  tokenCount: 0,
+  tokenOverhead: 0,
+  memory: {
+    solana: {
+      recentLookups: [],
+      lastAddress: null,
+      lastTransactionBatch: null
+    }
+  }
 };
 
 export class CliSessionStore {
@@ -37,6 +49,24 @@ export class CliSessionStore {
     };
     if (!Array.isArray(merged.langs) || merged.langs.length === 0) {
       merged.langs = defaultState.langs;
+    }
+    if (!merged.memory || typeof merged.memory !== "object") {
+      merged.memory = JSON.parse(JSON.stringify(defaultState.memory));
+    }
+    if (!merged.memory.solana || typeof merged.memory.solana !== "object") {
+      merged.memory.solana = JSON.parse(JSON.stringify(defaultState.memory.solana));
+    }
+    if (!Array.isArray(merged.memory.solana.recentLookups)) {
+      merged.memory.solana.recentLookups = [];
+    }
+    if (!Number.isFinite(Number(merged.tokenCount))) {
+      merged.tokenCount = estimateTokens(merged.history || []);
+    }
+    if (!Number.isFinite(Number(merged.tokenOverhead))) {
+      merged.tokenOverhead = 0;
+    }
+    if (!merged.sessionId) {
+      merged.sessionId = randomUUID();
     }
     // Migrate stale local-only model names to the configured default.
     if (merged.model === "llama3.1:8b" || merged.model === "gemma4" || merged.model === "gemma3") {

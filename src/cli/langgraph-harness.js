@@ -7,22 +7,47 @@ import { buildLangGraphTools } from "./langgraph-tools.js";
 import { SOLANA_DEV_SKILL } from "./solana-skill.js";
 
 function buildSystemPrompt(session, mode = "chat") {
+  const recent = (session.state.history || []).slice(-4).map((entry) => {
+    const role = entry.role === "user" ? "User" : "Assistant";
+    return `${role}: ${String(entry.content || "").slice(0, 280)}`;
+  });
   const taskHint =
     mode === "task"
       ? "You are running a longer multi-step DeFi and Solana learning task. Decompose the goal, use tools when needed, keep the work grounded in on-chain facts, and return a concrete result."
       : mode === "lookup"
-        ? "You are summarizing a pre-fetched Solana target snapshot. Do not call tools. Answer only from the provided data."
+      ? "You are summarizing a pre-fetched Solana target snapshot. Do not call tools. Answer only from the provided data."
         : "You are answering in standard operator mode. Be concise, tool-aware, and explain only when asked.";
+
+  if (mode === "lookup") {
+    return [
+      "You are ORION, an agentic DeFi CLI for Solana learners and operators.",
+      taskHint,
+      "Use only the provided snapshot. Be concise and factual. No markdown, no headings, no capability lists.",
+      "Return 4 to 6 short lines in Label: value format so the terminal can render a summary panel.",
+      "Put the most important facts first and say when something is unavailable instead of guessing.",
+      "When the source data is incomplete, say what is missing instead of guessing.",
+      `Current network: ${session.state.network}`,
+      `Current RPC: ${session.state.rpcUrl}`,
+      `Current wallet: ${session.state.currentWallet || "none selected"}`,
+      `Current strategy: ${session.state.currentStrategy}`,
+      `Workspace: ${session.state.workspace}`
+    ].join(" ");
+  }
 
   return [
     "You are ORION, an agentic DeFi CLI for Solana learners and operators.",
     taskHint,
     SOLANA_DEV_SKILL,
     "Use short, direct, and visually clean formatting. Do not dump capability lists, headings, or long preambles unless the user explicitly asks for a breakdown. Prefer one short answer paragraph, then at most a few bullets if they add value.",
-    "Do not use Markdown emphasis like **bold**, section headers, or code fences in final answers unless the user explicitly asks for them. Keep terminal output plain and clean.",
+    "CRITICAL: Never use Markdown in responses. No **bold**, no *italic*, no `code`, no # headers, no --- dividers, no lists with * or -. Use plain text only. For lists, use • as a bullet.",
     "When you do use bullets, keep them compact and meaningful. Avoid repeating the user's prompt or your own role unless the user asked who you are.",
     "Prefer tool calls for wallet balances, portfolio inspection, Solscan explorer snapshots, account lookup, transaction explanation, token account inspection, program scans, recent signatures, and workspace file reads.",
+    "Use web search for public facts or current documentation when on-chain data is not enough. Only trust the result if 3 to 5 references agree closely enough; otherwise say it is unverified and keep the answer grounded.",
+    "For Solana ecosystem definitions, docs, releases, or other public factual questions, search first instead of answering from memory. Do not synthesize a fact unless the sources agree.",
     "Use the Solana snippet executor for small read-only JavaScript examples when code is easier than a direct RPC call. Keep snippets focused on learning, inspection, and validation.",
+    "When displaying Solana program owners or accounts, prefer human-readable labels only when the source data provides them. Otherwise, show the raw address exactly as returned by the API and do not invent a label.",
+    "Avoid informal wording like fake SOL. When you mean devnet funds, say test SOL or devnet SOL.",
+    "When the user asks to inspect an address, present the result as clean terminal lines with a label and value separated by a colon. No boxes, no markdown, just clean factual lines.",
     "If the user asks to monitor something over time, revisit later, keep watching, or handle long-horizon work, create a durable background task or watch task yourself instead of asking the user to use a slash command.",
     "When the user is learning, explain Solana concepts only in the context of a real address, signature, token account, program, or DeFi workflow. Stay concise unless asked to go deeper.",
     "Do not ask the user to type a slash command when a tool can perform the action directly.",
@@ -32,11 +57,16 @@ function buildSystemPrompt(session, mode = "chat") {
     `Current RPC: ${session.state.rpcUrl}`,
     `Current wallet: ${session.state.currentWallet || "none selected"}`,
     `Current strategy: ${session.state.currentStrategy}`,
-    `Workspace: ${session.state.workspace}`
+    `Workspace: ${session.state.workspace}`,
+    recent.length ? `Recent conversation:\n${recent.join("\n")}` : ""
   ].join(" ");
 }
 
 function buildPlanningPrompt(session) {
+  const recent = (session.state.history || []).slice(-4).map((entry) => {
+    const role = entry.role === "user" ? "User" : "Assistant";
+    return `${role}: ${String(entry.content || "").slice(0, 280)}`;
+  });
   return [
     "You are ORION's planner for an agentic DeFi CLI for Solana learners and operators.",
     "Your job is to decide whether the user's prompt should be handled directly or decomposed into smaller tasks.",
@@ -47,6 +77,8 @@ function buildPlanningPrompt(session) {
     "If the prompt requires multiple inspections, comparisons, searches, or follow-up analysis, return multiple steps and mode \"task\".",
     "If the prompt asks to watch or monitor over time, return mode \"watch\" and a small set of steps for the initial setup and follow-up.",
     "If the prompt is a lookup for a specific Solana address or transaction signature, return mode \"lookup\" and a small 2-4 step plan.",
+    "If the prompt needs public web facts, current documentation, or non-chain context, the final steps may include web search. Use only consistent references.",
+    "If the prompt asks what a Solana term means or how the ecosystem works, prefer a search-backed answer over memory.",
     "Return strict JSON with keys: mode, title, summary, needsBackground, steps.",
     "Each step must be an object with keys: title, goal.",
     "No markdown. No code fences. No commentary outside JSON.",
@@ -54,7 +86,8 @@ function buildPlanningPrompt(session) {
     `Current RPC: ${session.state.rpcUrl}`,
     `Current wallet: ${session.state.currentWallet || "none selected"}`,
     `Current strategy: ${session.state.currentStrategy}`,
-    `Workspace: ${session.state.workspace}`
+    `Workspace: ${session.state.workspace}`,
+    recent.length ? `Recent conversation:\n${recent.join("\n")}` : ""
   ].join(" ");
 }
 
@@ -173,6 +206,12 @@ export class LangGraphHarness {
   }
 
   async decomposePrompt(ctx, prompt) {
+    // Structural pre-check: if heuristics already say "single answer", skip the LLM planner call
+    const quick = fallbackPlan(prompt);
+    if (quick.mode === "answer" && quick.steps.length === 1) {
+      return quick;
+    }
+
     const headers = config.ollamaApiKey
       ? { Authorization: `Bearer ${config.ollamaApiKey}` }
       : undefined;
@@ -187,6 +226,8 @@ export class LangGraphHarness {
       new SystemMessage(buildPlanningPrompt(this.session)),
       new HumanMessage(prompt)
     ]);
+
+    this.session.recordTokenUsage?.(buildPlanningPrompt(this.session));
 
     const parsed = extractJsonObject(response.content);
     if (!parsed || typeof parsed !== "object") {
@@ -260,32 +301,38 @@ export class LangGraphHarness {
 
   async runPrompt(ctx, prompt, options = {}) {
     const graph = this.createGraph(ctx, options.mode || "chat", { useTools: options.useTools !== false });
+    const threadId = options.threadId || `orion-chat-${ctx.session.state.sessionId || "session"}`;
     const result = await graph.invoke(
       {
         messages: [new HumanMessage(prompt)]
       },
       {
         configurable: {
-          thread_id: `orion-chat-${Date.now()}`
-        }
+          thread_id: threadId,
+          recursionLimit: options.recursionLimit || config.graphRecursionLimit
+        },
+        signal: options.signal
       }
     );
 
     const lastMessage = result.messages[result.messages.length - 1];
+    this.session.recordTokenUsage?.(buildSystemPrompt(this.session, options.mode || "chat"));
     return lastMessage?.content || "No response returned by the graph.";
   }
 
   async runTask(ctx, prompt, options = {}) {
     const graph = this.createGraph(ctx, "task", { useTools: true });
-    const threadId = options.threadId || `orion-task-${Date.now()}`;
+    const threadId = options.threadId || `orion-task-${ctx.session.state.sessionId || "session"}`;
     const stream = await graph.stream(
       {
         messages: [new HumanMessage(prompt)]
       },
       {
         configurable: {
-          thread_id: threadId
-        }
+          thread_id: threadId,
+          recursionLimit: options.recursionLimit || config.graphRecursionLimit
+        },
+        signal: options.signal
       },
       {
         streamMode: "updates"
@@ -293,28 +340,27 @@ export class LangGraphHarness {
     );
 
     const updates = [];
+    let lastAgentContent = null;
+
     for await (const chunk of stream) {
       updates.push(chunk);
       if (options.onUpdate) {
         await options.onUpdate(chunk);
       }
-    }
-
-    const result = await graph.invoke(
-      {
-        messages: [new HumanMessage(prompt)]
-      },
-      {
-        configurable: {
-          thread_id: threadId
+      if (chunk?.agent?.messages?.length) {
+        const msgs = chunk.agent.messages;
+        const last = msgs[msgs.length - 1];
+        if (last?.content && typeof last.content === "string" && last.content.trim()) {
+          lastAgentContent = last.content;
         }
       }
-    );
+    }
 
-    const lastMessage = result.messages[result.messages.length - 1];
+    this.session.recordTokenUsage?.(buildSystemPrompt(this.session, "task"));
+
     return {
       updates,
-      response: lastMessage?.content || "No response returned by the graph."
+      response: lastAgentContent || "No response returned by the graph."
     };
   }
 }

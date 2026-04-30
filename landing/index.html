@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Orion — Agentic DeFi CLI for Solana</title>
+  <style>
+    /* ── Palette (mirrors CLI ANSI codes) ──────────────────────────────── */
+    :root {
+      --bg:        #0c0c0f;
+      --bg-card:   #111116;
+      --primary:   #8b7afa;   /* ANSI 141 */
+      --secondary: #ff87ff;   /* ANSI 213 */
+      --accent:    #00d7ff;   /* ANSI 51  */
+      --success:   #5fff87;   /* ANSI 84  */
+      --warning:   #ffd75f;   /* ANSI 221 */
+      --danger:    #ff5f5f;   /* ANSI 203 */
+      --border:    #3a3a4a;
+      --muted:     #606070;
+      --text:      #c8c8d8;
+    }
+
+    /* ── Reset ─────────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+      font-size: 14px;
+      line-height: 1.6;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { color: var(--primary); }
+
+    /* ── Rule utility ──────────────────────────────────────────────────── */
+    .rule {
+      width: 100%;
+      height: 1px;
+      background: var(--border);
+    }
+    .rule-label {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .rule-label::before {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+    .rule-label .tag {
+      padding: 0 0.5rem;
+    }
+
+    /* ── Top bar ───────────────────────────────────────────────────────── */
+    .topbar {
+      width: 100%;
+      border-bottom: 1px solid var(--border);
+      padding: 0.6rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .topbar .brand {
+      color: var(--primary);
+      font-weight: 700;
+      letter-spacing: 0.05em;
+    }
+    .topbar nav a {
+      color: var(--muted);
+      margin-left: 1.5rem;
+      font-size: 12px;
+      transition: color 0.15s;
+    }
+    .topbar nav a:hover { color: var(--text); }
+
+    /* ── Hero ──────────────────────────────────────────────────────────── */
+    .hero {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 5rem 2rem 3rem;
+      text-align: center;
+    }
+
+    .logo-ascii {
+      font-size: clamp(7px, 1.2vw, 13px);
+      line-height: 1.15;
+      color: var(--primary);
+      white-space: pre;
+      letter-spacing: 0;
+      margin-bottom: 0.3rem;
+    }
+
+    .logo-underline {
+      color: var(--muted);
+      white-space: pre;
+      font-size: clamp(7px, 1.2vw, 13px);
+      line-height: 1;
+      margin-bottom: 1.5rem;
+    }
+
+    .hero-version {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 2.5rem;
+      letter-spacing: 0.05em;
+    }
+    .hero-version span { color: var(--warning); }
+
+    .hero-title {
+      font-size: clamp(1.4rem, 4vw, 2.4rem);
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1.2;
+      margin-bottom: 1rem;
+      letter-spacing: -0.02em;
+    }
+    .hero-title em {
+      font-style: normal;
+      color: var(--primary);
+    }
+
+    .hero-sub {
+      max-width: 560px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+      margin-bottom: 2.5rem;
+    }
+
+    /* ── Install block ─────────────────────────────────────────────────── */
+    .install-block {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.6rem 1rem;
+      margin-bottom: 1rem;
+      font-size: 13px;
+    }
+    .install-block .prompt { color: var(--success); user-select: none; }
+    .install-block .cmd    { color: var(--text); }
+    .copy-btn {
+      margin-left: auto;
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--muted);
+      font-family: inherit;
+      font-size: 11px;
+      padding: 0.2rem 0.5rem;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    .copy-btn:hover { border-color: var(--primary); color: var(--primary); }
+    .copy-btn.copied { border-color: var(--success); color: var(--success); }
+
+    .dl-note {
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 3rem;
+    }
+    .dl-note a { color: var(--accent); }
+
+    /* ── Feature grid ──────────────────────────────────────────────────── */
+    .features {
+      width: 100%;
+      max-width: 820px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      margin-bottom: 4rem;
+    }
+    .feature {
+      background: var(--bg-card);
+      padding: 1.2rem 1.4rem;
+    }
+    .feature .icon {
+      font-size: 16px;
+      color: var(--primary);
+      margin-bottom: 0.5rem;
+    }
+    .feature h3 {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 0.35rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .feature p {
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    /* ── Terminal preview ──────────────────────────────────────────────── */
+    .terminal {
+      width: 100%;
+      max-width: 720px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 4rem;
+      text-align: left;
+    }
+    .terminal-bar {
+      background: #1a1a22;
+      padding: 0.5rem 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .terminal-bar .dot {
+      width: 10px; height: 10px; border-radius: 50%;
+    }
+    .dot-r { background: #ff5f57; }
+    .dot-y { background: #ffbd2e; }
+    .dot-g { background: #28ca41; }
+    .terminal-bar .title {
+      margin-left: auto;
+      margin-right: auto;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .terminal-body {
+      padding: 1rem 1.2rem;
+      font-size: 12px;
+      line-height: 1.7;
+    }
+    .t-header {
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.4rem;
+      margin-bottom: 0.6rem;
+      font-size: 11px;
+    }
+    .t-header .name { color: var(--primary); font-weight: 700; }
+    .t-header .net  { color: var(--accent); }
+    .t-rule { color: var(--border); }
+    .t-prompt { color: var(--muted); }
+    .t-prompt .arrow { color: var(--primary); font-weight: 700; }
+    .t-prompt .input { color: var(--text); }
+    .t-step   { color: var(--primary); }
+    .t-step .num { color: var(--muted); }
+    .t-response { color: var(--text); padding-left: 0.8rem; }
+    .t-key   { color: var(--warning); }
+    .t-val   { color: var(--text); }
+    .t-footer { color: var(--muted); padding-top: 0.4rem; font-size: 11px; }
+    .t-footer .model { color: var(--warning); }
+    .t-cursor {
+      display: inline-block;
+      width: 7px; height: 13px;
+      background: var(--primary);
+      vertical-align: text-bottom;
+      animation: blink 1.1s step-end infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    /* ── Bottom CLI footer ─────────────────────────────────────────────── */
+    .cli-footer {
+      width: 100%;
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+    }
+    .cli-footer .rule-mode {
+      display: flex;
+      align-items: center;
+      padding: 0;
+    }
+    .cli-footer .rule-dashes {
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+    .cli-footer .mode-tag {
+      color: var(--muted);
+      padding: 0 0.5rem;
+      white-space: nowrap;
+    }
+    .cli-footer .prompt-row {
+      padding: 0.4rem 0.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    .cli-footer .prompt-arrow { color: var(--primary); font-weight: 700; }
+    .cli-footer .rule-bottom {
+      height: 1px;
+      background: var(--border);
+    }
+    .cli-footer .hint-row {
+      padding: 0.35rem 0.5rem;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .cli-footer .hint-row kbd {
+      color: var(--text);
+      font-family: inherit;
+      font-size: 11px;
+    }
+
+    /* ── Responsive ────────────────────────────────────────────────────── */
+    @media (max-width: 600px) {
+      .topbar nav { display: none; }
+      .features { grid-template-columns: 1fr; }
+      .logo-ascii, .logo-underline { font-size: 6px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top bar -->
+  <header class="topbar">
+    <span class="brand">orion</span>
+    <nav>
+      <a href="#features">features</a>
+      <a href="#install">install</a>
+      <a href="https://github.com" target="_blank">github</a>
+    </nav>
+  </header>
+
+  <!-- Hero -->
+  <main class="hero">
+
+    <pre class="logo-ascii">
+ ██████  ██████╗ ██╗ ██████╗ ███╗   ██╗
+██╔═══██╗██╔══██╗██║██╔═══██╗████╗  ██║
+██║   ██║██████╔╝██║██║   ██║██╔██╗ ██║
+██║   ██║██╔══██╗██║██║   ██║██║╚██╗██║
+╚██████╔╝██║  ██║██║╚██████╔╝██║ ╚████║
+ ╚═════╝ ╚═╝  ╚═╝╚═╝ ╚═════╝ ╚═╝  ╚═══╝</pre>
+
+    <pre class="logo-underline">▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀</pre>
+
+    <p class="hero-version">v0.1.0 &nbsp;·&nbsp; <span>gemma4:31b-cloud</span></p>
+
+    <h1 class="hero-title">Agentic <em>DeFi CLI</em> for Solana</h1>
+
+    <p class="hero-sub">
+      Plain-text prompts → on-chain intelligence.<br/>
+      Inspect wallets, trace transactions, monitor accounts — all from your terminal.
+      Plans decompose automatically. Results are grounded in live chain data.
+    </p>
+
+    <!-- Install -->
+    <div id="install" class="install-block">
+      <span class="prompt">$</span>
+      <span class="cmd">npm install -g orion-ai</span>
+      <button class="copy-btn" onclick="copyInstall(this)">copy</button>
+    </div>
+    <p class="dl-note">
+      Requires Node.js 18+ &nbsp;·&nbsp; <a href="https://github.com" target="_blank">view on GitHub ↗</a>
+    </p>
+
+    <!-- Terminal preview -->
+    <div class="terminal">
+      <div class="terminal-bar">
+        <div class="dot dot-r"></div>
+        <div class="dot dot-y"></div>
+        <div class="dot dot-g"></div>
+        <span class="title">orion &mdash; devnet</span>
+      </div>
+      <div class="terminal-body">
+        <div class="t-header">
+          <span class="name">orion</span> &nbsp;·&nbsp;
+          <span class="net">devnet</span> &nbsp;·&nbsp;
+          <span>no wallet</span>
+        </div>
+        <div class="t-rule">────────────────────────────────────────────────── · devnet</div>
+
+        <div class="t-prompt" style="margin-top:0.5rem">
+          <span class="arrow">❯</span>
+          <span class="input"> tell me everything about AbNZmD3ffemMzGo3xiaXzTJf7yb7odqc75pAsMWVWHbq</span>
+        </div>
+
+        <div style="margin-top:0.4rem">
+          <div class="t-step"><span class="num">• 1/3</span> Classifying target as a wallet address</div>
+          <div class="t-step"><span class="num">• 2/3</span> Fetching Solana RPC account snapshot</div>
+          <div class="t-step"><span class="num">• 3/3</span> Summarizing snapshot through the harness</div>
+        </div>
+
+        <div class="t-response" style="margin-top:0.5rem">
+          <div>System account on mainnet-beta.</div>
+          <div style="margin-top:0.3rem">
+            <span class="t-key">balance </span><span class="t-val">0.743 SOL</span><br/>
+            <span class="t-key">owner   </span><span class="t-val">System Program</span><br/>
+            <span class="t-key">activity</span><span class="t-val">10 finalized transactions · slots 416566026 – 416567535</span>
+          </div>
+        </div>
+
+        <div class="t-footer">
+          <span>▣</span> <span class="model">gemma4:31b-cloud</span> &nbsp;·&nbsp; 3.2s
+        </div>
+
+        <div class="t-rule" style="margin-top:0.5rem">────────────────────────────────────────────────── · devnet</div>
+        <div class="t-prompt" style="margin-top:0.2rem">
+          <span class="arrow">❯</span> <span class="t-cursor"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Features -->
+    <div id="features" class="features">
+      <div class="feature">
+        <div class="icon">◆</div>
+        <h3>Live chain data</h3>
+        <p>Every answer is grounded in real Solana RPC state. No hallucinated balances or stale snapshots.</p>
+      </div>
+      <div class="feature">
+        <div class="icon">⎿</div>
+        <h3>Multi-step planning</h3>
+        <p>Complex prompts decompose into ordered steps. Each step runs with a spinner, results synthesized inline.</p>
+      </div>
+      <div class="feature">
+        <div class="icon">◉</div>
+        <h3>Watch tasks</h3>
+        <p>Subscribe to account changes or transaction confirmations. Orion reacts and reports when events fire.</p>
+      </div>
+      <div class="feature">
+        <div class="icon">≈</div>
+        <h3>Transaction inspector</h3>
+        <p>Paste any signature. Orion fetches, decodes, and explains the instruction flow in plain English.</p>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- CLI-style footer -->
+  <footer class="cli-footer">
+    <div class="rule-mode">
+      <div class="rule-dashes"></div>
+      <span class="mode-tag">· devnet</span>
+    </div>
+    <div class="prompt-row">
+      <span class="prompt-arrow">❯</span>
+      <span class="t-cursor"></span>
+    </div>
+    <div class="rule-bottom"></div>
+    <div class="hint-row">
+      <kbd>[/help]</kbd> commands &nbsp;
+      <kbd>[tab]</kbd> complete &nbsp;
+      <kbd>[↑↓]</kbd> history &nbsp;
+      <kbd>[esc]</kbd> cancel &nbsp;
+      <kbd>[@]</kbd> reference
+    </div>
+  </footer>
+
+  <script>
+    function copyInstall(btn) {
+      navigator.clipboard.writeText('npm install -g orion-ai').then(() => {
+        btn.textContent = 'copied!';
+        btn.classList.add('copied');
+        setTimeout(() => { btn.textContent = 'copy'; btn.classList.remove('copied'); }, 2000);
+      });
+    }
+  </script>
+</body>
+</html>

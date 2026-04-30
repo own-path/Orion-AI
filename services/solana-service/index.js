@@ -12,6 +12,93 @@ function normalizeAccountInfo(accountInfo) {
   };
 }
 
+function toBase58(value) {
+  if (!value) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  return value.toBase58?.() || value.toString?.() || null;
+}
+
+function normalizeParsedInstruction(instruction, accountKeys) {
+  const programId = toBase58(instruction.programId) || accountKeys?.[instruction.programIdIndex]?.pubkey || null;
+  const accounts = Array.isArray(instruction.accounts)
+    ? instruction.accounts.map((accountIndex) => accountKeys?.[accountIndex]?.pubkey || String(accountIndex))
+    : [];
+  const parsed = instruction.parsed
+    ? {
+        type: instruction.parsed.type || null,
+        info: instruction.parsed.info || null
+      }
+    : null;
+
+  return {
+    programId,
+    program: instruction.program || null,
+    accounts,
+    parsed
+  };
+}
+
+function normalizeTokenBalance(balance) {
+  return {
+    accountIndex: balance.accountIndex,
+    mint: balance.mint,
+    owner: balance.owner || null,
+    uiAmount: balance.uiTokenAmount?.uiAmount ?? null,
+    uiAmountString: balance.uiTokenAmount?.uiAmountString ?? null,
+    amount: balance.uiTokenAmount?.amount ?? null,
+    decimals: balance.uiTokenAmount?.decimals ?? null
+  };
+}
+
+function diffTokenBalances(preBalances = [], postBalances = []) {
+  const preMap = new Map();
+  for (const entry of preBalances) {
+    const key = `${entry.accountIndex}:${entry.mint}:${entry.owner || ""}`;
+    preMap.set(key, entry);
+  }
+
+  const seen = new Set();
+  const diffs = [];
+  for (const post of postBalances) {
+    const key = `${post.accountIndex}:${post.mint}:${post.owner || ""}`;
+    const pre = preMap.get(key) || null;
+    seen.add(key);
+    const preAmount = Number(pre?.amount || 0);
+    const postAmount = Number(post.amount || 0);
+    const deltaAmount = postAmount - preAmount;
+    if (pre || postAmount !== 0 || preAmount !== 0) {
+      diffs.push({
+        accountIndex: post.accountIndex,
+        mint: post.mint,
+        owner: post.owner || null,
+        pre: pre ? normalizeTokenBalance(pre) : null,
+        post: normalizeTokenBalance(post),
+        deltaAmount: String(deltaAmount)
+      });
+    }
+  }
+
+  for (const pre of preBalances) {
+    const key = `${pre.accountIndex}:${pre.mint}:${pre.owner || ""}`;
+    if (seen.has(key)) continue;
+    const preAmount = Number(pre?.amount || 0);
+    diffs.push({
+      accountIndex: pre.accountIndex,
+      mint: pre.mint,
+      owner: pre.owner || null,
+      pre: normalizeTokenBalance(pre),
+      post: null,
+      deltaAmount: String(0 - preAmount)
+    });
+  }
+
+  return diffs;
+}
+
 export class SolanaService {
   constructor({ rpcUrl = config.solanaRpcUrl, network = config.solanaNetwork } = {}) {
     this.rpcUrl = rpcUrl;
@@ -365,22 +452,57 @@ export class SolanaService {
       return null;
     }
 
+    const message = transaction.transaction.message;
     const feeLamports = transaction.meta?.fee || 0;
-    const instructionCount = transaction.transaction.message.instructions.length;
-    const accountKeys = transaction.transaction.message.accountKeys.map((key) => ({
-      pubkey: key.pubkey.toBase58(),
+    const instructionCount = message.instructions.length;
+    const accountKeys = message.accountKeys.map((key) => ({
+      pubkey: toBase58(key.pubkey),
       signer: key.signer,
       writable: key.writable
     }));
+    const instructions = message.instructions.map((instruction, index) => ({
+      index,
+      ...normalizeParsedInstruction(instruction, accountKeys)
+    }));
+    const programIds = [...new Set(instructions.map((instruction) => instruction.programId).filter(Boolean))];
+    const preBalances = transaction.meta?.preBalances || [];
+    const postBalances = transaction.meta?.postBalances || [];
+    const balanceChanges = accountKeys
+      .map((key, index) => {
+        const pre = Number(preBalances[index] || 0);
+        const post = Number(postBalances[index] || 0);
+        const delta = post - pre;
+        return {
+          accountIndex: index,
+          pubkey: key.pubkey,
+          signer: key.signer,
+          writable: key.writable,
+          preLamports: String(pre),
+          postLamports: String(post),
+          deltaLamports: String(delta)
+        };
+      })
+      .filter((entry) => entry.deltaLamports !== "0");
+    const preTokenBalances = (transaction.meta?.preTokenBalances || []).map(normalizeTokenBalance);
+    const postTokenBalances = (transaction.meta?.postTokenBalances || []).map(normalizeTokenBalance);
 
     return {
       signature,
       slot: transaction.slot,
       blockTime: transaction.blockTime ? new Date(transaction.blockTime * 1000).toISOString() : null,
       status: transaction.meta?.err ? "failed" : "success",
+      err: transaction.meta?.err || null,
       feeSol: feeLamports / 1_000_000_000,
+      feeLamports,
+      computeUnitsConsumed: transaction.meta?.computeUnitsConsumed || null,
       instructionCount,
-      accounts: accountKeys
+      innerInstructionCount: transaction.meta?.innerInstructions?.length || 0,
+      programIds,
+      instructions,
+      accounts: accountKeys,
+      balanceChanges,
+      tokenBalanceChanges: diffTokenBalances(preTokenBalances, postTokenBalances),
+      logs: transaction.meta?.logMessages || []
     };
   }
 

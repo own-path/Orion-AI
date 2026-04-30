@@ -3,6 +3,7 @@ import path from "node:path";
 import { buildPatchPreview } from "./diff-preview.js";
 import { confirmAction, assertNonMainnet } from "./permissions.js";
 import { runSolanaSnippet } from "./snippet-exec.js";
+import { searchWeb } from "./web-search.js";
 
 function createTool(id, description, execute) {
   return { id, description, execute };
@@ -108,6 +109,21 @@ export function buildToolRegistry() {
         lines: fees.length
           ? fees.slice(0, 10).map((entry) => `slot ${entry.slot} | fee ${entry.prioritizationFee}`)
           : ["No fee samples returned."]
+      };
+    }),
+    createTool("web.search", "Search the public web with consensus filtering", async (_, { query, limit }) => {
+      const result = await searchWeb(query, { limit });
+      return {
+        type: "panel",
+        title: result.consensus?.consensus ? "Web Search Consensus" : "Web Search Results",
+        lines: [
+          `Query: ${result.query}`,
+          `Consensus: ${result.consensus?.consensus ? "yes" : "no"}`,
+          `Confidence: ${result.consensus?.confidence ?? 0}`,
+          result.consensus?.sharedTerms?.length ? `Shared Terms: ${result.consensus.sharedTerms.join(", ")}` : "Shared Terms: none",
+          "",
+          ...(result.results || []).map((entry, index) => `${index + 1}. ${entry.title} | ${entry.url} | ${entry.snippet}`)
+        ]
       };
     }),
     createTool("solana.airdrop", "Request a devnet or testnet airdrop", async ({ session, solana }, { address, solAmount }) => {

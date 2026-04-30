@@ -1,11 +1,27 @@
 {
-  "name": "orion-ai",
+  "name": "orion-ai-cli",
   "version": "0.1.0",
-  "description": "Agentic DeFi CLI for Solana",
-  "private": true,
+  "description": "Agentic DeFi CLI for Solana — inspect wallets, fetch transactions, and run on-chain analysis from your terminal.",
   "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "solana",
+    "defi",
+    "cli",
+    "blockchain",
+    "web3",
+    "ai",
+    "agent",
+    "wallet"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
-    "orion": "./bin/orion.js"
+    "orion": "bin/orion.js"
   },
   "files": [
     "bin",
@@ -17,7 +33,8 @@
   "scripts": {
     "start": "node bin/orion.js",
     "start:cli": "node bin/orion.js",
-    "check": "node --check bin/orion.js && node --check src/cli/index.js && node --check src/cli/bootstrap.js && node --check src/cli/command-registry.js && node --check src/cli/langgraph-harness.js && node --check src/cli/langgraph-tools.js && node --check src/cli/onboarding.js && node --check src/cli/permissions.js && node --check src/cli/renderer.js && node --check src/cli/runtime-session.js && node --check src/cli/runtime.js && node --check src/cli/session-store.js && node --check src/cli/task-store.js && node --check src/cli/diff-preview.js && node --check src/cli/shell-tool.js && node --check src/cli/theme.js && node --check src/cli/tool-registry.js && node --check services/solana-service/index.js && node --check services/voice-service/index.js && node --check services/shared/ollama-agent.js"
+    "serve": "node bin/orion.js --serve",
+    "check": "node --check bin/orion.js && node --check src/cli/index.js && node --check src/cli/bootstrap.js && node --check src/cli/command-registry.js && node --check src/cli/langgraph-harness.js && node --check src/cli/langgraph-tools.js && node --check src/cli/onboarding.js && node --check src/cli/permissions.js && node --check src/cli/renderer.js && node --check src/cli/runtime-session.js && node --check src/cli/runtime.js && node --check src/cli/session-store.js && node --check src/cli/task-store.js && node --check src/cli/diff-preview.js && node --check src/cli/shell-tool.js && node --check src/cli/theme.js && node --check src/cli/tool-registry.js && node --check src/server/http.js && node --check services/solana-service/index.js && node --check services/voice-service/index.js && node --check services/shared/config.js && node --check services/shared/env-store.js && node --check services/shared/ollama-agent.js"
   },
   "dependencies": {
     "@langchain/core": "^0.3.58",

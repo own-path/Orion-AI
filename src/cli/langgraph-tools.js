@@ -1,6 +1,7 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { runSolanaSnippet } from "./snippet-exec.js";
+import { searchWeb } from "./web-search.js";
 
 function defaultWallet(session, explicit) {
   return explicit || session.state.currentWallet || "";
@@ -72,6 +73,29 @@ export function buildLangGraphTools(ctx) {
         schema: z.object({
           address: z.string().describe("Solana address to inspect"),
           limit: z.number().optional().describe("Maximum number of transactions or transfers to return")
+        })
+      }
+    ),
+    tool(
+      async ({ query, limit }) => {
+        const result = await searchWeb(query, { limit: limit || 5 });
+        return JSON.stringify(
+          {
+            query: result.query,
+            consensus: result.consensus,
+            usableResults: result.consensus?.consensus ? result.results : []
+          },
+          null,
+          2
+        );
+      },
+      {
+        name: "web_search",
+        description:
+          "Search the public web for current facts or documentation. Only use the result if the returned references are consistent.",
+        schema: z.object({
+          query: z.string().describe("Search query"),
+          limit: z.number().optional().describe("Number of references to gather, between 3 and 5")
         })
       }
     ),

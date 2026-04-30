@@ -70,12 +70,7 @@ function modeColor(network) {
   return C.border;
 }
 
-function modeLabel(session) {
-  const net = session?.network || "local";
-  return net;
-}
-
-function estimateTokens(history = []) {
+export function estimateTokens(history = []) {
   return history.reduce((sum, entry) => sum + Math.max(1, Math.ceil(String(entry?.content || "").length / 4)), 0);
 }
 
@@ -152,26 +147,43 @@ function gitBranch(cwd) {
   }
 }
 
-function turnHeader(session) {
+function turnHeader(session, { ollamaBaseUrl } = {}) {
   const cwd = shortPath(session?.workspace || process.cwd(), 2);
+  const branch = gitBranch(session?.workspace || process.cwd());
   const model = session?.model || "default";
+  const network = session?.network || "local";
   const contextWindow = contextWindowForModel(model);
-  const usedTokens = estimateTokens(session?.history || []);
-  const pct = Math.max(5, Math.min(95, Math.round((usedTokens / Math.max(1, contextWindow)) * 100)));
-  const blocks = Math.max(1, Math.min(8, Math.round((pct / 100) * 8)));
-  const bar = `${"░".repeat(8 - blocks)}${"█".repeat(blocks)}`;
-  const cost = "$Free";
+  const historyEstimate = estimateTokens(session?.history || []);
+  const usageEstimate = Number.isFinite(Number(session?.tokenCount)) && Number(session?.tokenCount) > 0
+    ? Number(session.tokenCount)
+    : historyEstimate;
+  const usedTokens = Math.max(historyEstimate, usageEstimate);
+  const pct = Math.max(0, Math.min(99.9, (usedTokens / Math.max(1, contextWindow)) * 100));
+  const blocks = Math.max(0, Math.min(8, Math.round((pct / 100) * 8)));
+  const emptyBlocks = 8 - blocks;
+  const bar = `${"░".repeat(emptyBlocks)}${"█".repeat(blocks)}`;
+  const baseUrl = ollamaBaseUrl || "";
+  const isCloud = baseUrl.length > 0 && !/localhost|127\.0\.0\.1|0\.0\.0\.0/.test(baseUrl);
+  const costLabel = isCloud ? "$Cloud" : "$Free";
+  const costColor = isCloud ? C.warning : C.success;
+  const netColor = modeColor(network);
+  const dot = paint("·", C.border);
+  const cwdLabel = branch ? `${cwd} (${branch})` : cwd;
   const leftParts = [
     paint("orion", BOLD + C.primary),
-    paint(cwd, C.muted),
-    paint("◉◉", C.success),
-  ].filter(Boolean);
+    dot,
+    paint(cwdLabel, C.muted),
+    dot,
+    paint(network, netColor),
+  ];
+  const barColor = pct > 80 ? C.danger : pct > 60 ? C.warning : C.border;
+  const pctColor = pct > 80 ? C.danger : pct > 60 ? C.warning : C.success;
   const right = [
     paint(model, C.warning),
-    paint(bar, C.border),
-    paint(`${pct}%`, C.success),
-    paint(`${(contextWindow / 1000).toFixed(1)}k`, C.muted),
-    paint(cost, C.success)
+    paint(bar, barColor),
+    paint(`${pct.toFixed(pct < 10 ? 1 : 0)}%`, pctColor),
+    paint(`${Math.round(contextWindow / 1000)}k`, C.muted),
+    paint(costLabel, costColor)
   ].join("  ");
   return headerStrip({
     left: leftParts.join(" "),
@@ -179,19 +191,17 @@ function turnHeader(session) {
   });
 }
 
-function turnFooter() {
-  return rule(C.border);
-}
-
 function promptMarker() {
   return ` ${BOLD}${C.primary}❯${RESET} `;
 }
 
-function promptRule() {
+function promptRule(network) {
   const cols = termCols();
-  const label = " · general ";
+  const mode = network || "local";
+  const label = " · " + mode + " ";
+  const mc = modeColor(mode);
   const line = "─".repeat(Math.max(0, cols - label.length));
-  return paint(line, C.border) + paint(label, C.border);
+  return paint(line, mc) + paint(label, mc);
 }
 
 // Two-segment header strip: left context, right model + cost.
@@ -224,26 +234,85 @@ function stripAnsi(s) {
   return String(s).replace(/\[[0-9;]*m/g, "");
 }
 
+function wrapPlainLine(text, width) {
+  const raw = String(text);
+  if (width <= 0) return [raw];
+  if (stripAnsi(raw).length <= width) return [raw];
+
+  const words = raw.split(/(\s+)/);
+  const lines = [];
+  let current = "";
+
+  const pushCurrent = () => {
+    lines.push(current.trimEnd());
+    current = "";
+  };
+
+  for (const token of words) {
+    if (!token) continue;
+    const tokenLen = stripAnsi(token).length;
+    const currentLen = stripAnsi(current).length;
+
+    if (token.trim() === "") {
+      if (currentLen === 0) continue;
+      if (currentLen + tokenLen <= width) current += token;
+      else pushCurrent();
+      continue;
+    }
+
+    if (currentLen > 0 && currentLen + tokenLen > width) {
+      pushCurrent();
+    }
+
+    if (tokenLen <= width) {
+      current += token;
+      continue;
+    }
+
+    let remaining = token;
+    while (stripAnsi(remaining).length > width) {
+      const slice = remaining.slice(0, width);
+      const visibleSlice = stripAnsi(slice);
+      if (visibleSlice.length < width) {
+        break;
+      }
+      lines.push(slice);
+      remaining = remaining.slice(width);
+    }
+    current += remaining;
+  }
+
+  if (current.length > 0) lines.push(current.trimEnd());
+  return lines.length > 0 ? lines : [raw];
+}
+
 function simplePanel(title, lines, innerWidth) {
   const cols = termCols();
-  const visibleLines = lines.map((l) => String(l));
-  const width = innerWidth ?? Math.min(
-    cols - 2,
-    Math.max(title.length + 4, ...visibleLines.map((l) => stripAnsi(l).length)) + 2
-  );
-
   const titleStr = ` ${title} `;
   const titleVisible = stripAnsi(titleStr).length;
-  const topFill = "─".repeat(Math.max(0, width - titleVisible - 2));
+  const usableWidth = Math.max(10, cols - 6);
+  const wrappedLines = lines.flatMap((l) => {
+    const value = String(l);
+    if (value.length === 0) return [""];
+    return wrapPlainLine(value, innerWidth ?? usableWidth);
+  });
+  const widestLine = Math.max(
+    titleVisible,
+    ...wrappedLines.map((l) => stripAnsi(l).length),
+    0
+  );
+  const width = innerWidth ?? Math.min(cols - 2, Math.max(titleVisible + 4, widestLine + 4));
+
+  const topFill = "─".repeat(Math.max(0, width - titleVisible - 3));
   const top = paint("╭─", C.border) + paint(titleStr, BOLD + C.primary) + paint(topFill + "╮", C.border);
 
-  const body = visibleLines.map((line) => {
+  const body = wrappedLines.map((line) => {
     const visible = stripAnsi(line);
-    const pad = " ".repeat(Math.max(0, width - visible.length - 2));
+    const pad = " ".repeat(Math.max(0, width - visible.length - 4));
     return paint("│ ", C.border) + line + pad + paint(" │", C.border);
   });
 
-  const bottom = paint("╰" + "─".repeat(width) + "╯", C.border);
+  const bottom = paint("╰" + "─".repeat(Math.max(0, width - 2)) + "╯", C.border);
   return [top, ...body, bottom].join("\n");
 }
 
@@ -257,11 +326,9 @@ export {
   hintBar,
   KEYBIND_BAR,
   modeColor,
-  modeLabel,
   startSpinner,
   withSpinner,
   turnHeader,
-  turnFooter,
   promptRule,
   turnFooterHint,
   promptMarker,
