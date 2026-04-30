@@ -59,12 +59,11 @@ export class CliSessionStore {
     if (!Array.isArray(merged.memory.solana.recentLookups)) {
       merged.memory.solana.recentLookups = [];
     }
-    if (!Number.isFinite(Number(merged.tokenCount))) {
-      merged.tokenCount = estimateTokens(merged.history || []);
-    }
-    if (!Number.isFinite(Number(merged.tokenOverhead))) {
-      merged.tokenOverhead = 0;
-    }
+    // Solana memory and conversation history are session-scoped — don't carry across restarts.
+    merged.memory.solana = JSON.parse(JSON.stringify(defaultState.memory.solana));
+    merged.history = [];
+    merged.tokenCount = 0;
+    merged.tokenOverhead = 0;
     if (!merged.sessionId) {
       merged.sessionId = randomUUID();
     }

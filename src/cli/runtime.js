@@ -462,6 +462,64 @@ function isValidWatchTarget(watchType, target) {
   return Boolean(extractSolanaCandidate(target));
 }
 
+function trimSummaryInput(input) {
+  if (!input || typeof input !== "object") return input;
+  const out = {
+    target: input.target,
+    kind: input.kind,
+    sourceNetwork: input.sourceNetwork,
+    prompt: input.prompt
+  };
+  if (input.balance) {
+    const b = input.balance;
+    out.balance = { solBalance: b.solBalance ?? b.lamports != null ? (b.lamports / 1e9) : null };
+  }
+  if (input.account) {
+    out.account = { owner: input.account.owner, executable: input.account.executable };
+  }
+  if (Array.isArray(input.recentSignatures)) {
+    out.recentSignatures = input.recentSignatures.slice(0, 5).map(s => ({
+      signature: s.signature,
+      confirmationStatus: s.confirmationStatus,
+      err: s.err || null
+    }));
+  }
+  if (Array.isArray(input.recentTransactions)) {
+    out.recentTransactions = input.recentTransactions.slice(0, 5).map(t => ({
+      signature: t.signature,
+      err: t.err || null,
+      summary: t.summary ? {
+        type: t.summary.type,
+        status: t.summary.status,
+        fee: t.summary.fee,
+        description: typeof t.summary.description === "string" ? t.summary.description.slice(0, 120) : undefined
+      } : null
+    }));
+  }
+  if (input.explorer) {
+    const ex = input.explorer;
+    out.explorer = {
+      balance: ex.balance ?? ex.lamports,
+      tokenAccounts: Array.isArray(ex.tokenAccounts) ? ex.tokenAccounts.length : undefined,
+      defiPositions: Array.isArray(ex.defiPositions) ? ex.defiPositions.length : undefined
+    };
+  }
+  if (input.transactionDetail || input.transactionActions) {
+    const td = input.transactionDetail || input.transactionActions;
+    out.transactionDetail = {
+      status: td.status ?? td.txStatus,
+      fee: td.fee ?? td.feeAmount,
+      type: td.type ?? td.txType,
+      err: td.err || td.parsedInstruction?.[0]?.type || null
+    };
+  }
+  if (input.rpcTransaction) {
+    const rt = input.rpcTransaction;
+    out.rpcTransaction = { slot: rt.slot, err: rt.meta?.err || null, fee: rt.meta?.fee };
+  }
+  return out;
+}
+
 function renderOutcome(outcome) {
   if (!outcome) {
     return;
@@ -760,14 +818,29 @@ export class OrionHarness {
     const relevantMemory = selectRelevantSolanaMemory(prompt, memory);
     const promptController = new AbortController();
     this.currentPromptController = promptController;
+
+    // Implicit address: if prompt has no Solana candidate but references data we'd have
+    // from a recently analyzed address, resolve that address as the implicit target.
+    let effectiveTarget = target;
+    let isImplicitTarget = false;
+    if (!effectiveTarget) {
+      const lastAddr = memory.solana?.lastAddress;
+      const lowerPrompt = prompt.toLowerCase();
+      const isWatchRequest = ["watch", "monitor", "track", "observe", "alert me", "notify me"].some(p => lowerPrompt.includes(p));
+      if (lastAddr && !isWatchRequest && looksLikeSolanaEvidenceTask(prompt) && isValidSolanaAddress(lastAddr)) {
+        effectiveTarget = lastAddr;
+        isImplicitTarget = true;
+      }
+    }
+
     const directTargetLookup = Boolean(
-      target &&
-      shouldDirectLookup(prompt, target) &&
-      (isValidSolanaAddress(target) || isLikelySolanaSignature(target))
+      effectiveTarget &&
+      (isImplicitTarget || shouldDirectLookup(prompt, effectiveTarget)) &&
+      (isValidSolanaAddress(effectiveTarget) || isLikelySolanaSignature(effectiveTarget))
     );
 
     try {
-      const cachedBatchCandidate = !target &&
+      const cachedBatchCandidate = !effectiveTarget &&
         relevantMemory?.kind === "transaction-batch" &&
         promptNeedsTransactionBatch(prompt) &&
         relevantMemory.item &&
@@ -810,7 +883,7 @@ export class OrionHarness {
         `Target: ${summaryInput.target}`,
         "Source: cached transaction batch from the current session.",
         "Summarize only the provided evidence.",
-        JSON.stringify(summaryInput)
+        JSON.stringify(trimSummaryInput(summaryInput))
       ].join("\n");
 
       this.graphHarness.model = this.session.state.model;
@@ -870,7 +943,7 @@ export class OrionHarness {
       }
 
     const planSteps = Array.isArray(plan.steps) && plan.steps.length ? plan.steps : [{ title: "Answer directly", goal: prompt }];
-    const resolvedLookup = shouldDirectLookup(prompt, target) && (isValidSolanaAddress(target) || isLikelySolanaSignature(target));
+    const resolvedLookup = (isImplicitTarget || shouldDirectLookup(prompt, effectiveTarget)) && (isValidSolanaAddress(effectiveTarget) || isLikelySolanaSignature(effectiveTarget));
     if (!resolvedLookup && (plan.mode !== "answer" || plan.needsBackground || planSteps.length > 1)) {
       printPlan(
         `${plan.title} · ${planSteps.length} step${planSteps.length === 1 ? "" : "s"}${plan.needsBackground ? " · background" : ""}`,
@@ -921,8 +994,8 @@ export class OrionHarness {
       }
 
       if (resolvedLookup) {
-      const isAddress = isValidSolanaAddress(target);
-      const isSignature = isLikelySolanaSignature(target);
+      const isAddress = isValidSolanaAddress(effectiveTarget);
+      const isSignature = isLikelySolanaSignature(effectiveTarget);
 
       if (!isAddress && !isSignature) {
         const message = [
@@ -938,11 +1011,11 @@ export class OrionHarness {
 
       printStep("1/3", isAddress ? "Classifying target as a wallet address" : "Classifying target as a transaction signature");
       printStepDetail(
-        isAddress ? `address  ${target}` : `signature  ${target.slice(0, 20)}…${target.slice(-8)}`,
+        isAddress ? `address  ${effectiveTarget}` : `signature  ${effectiveTarget.slice(0, 20)}…${effectiveTarget.slice(-8)}`,
         `network  ${this.session.state.network}`
       );
 
-      const cachedLookup = isAddress ? findCachedLookupForAddress(target, memory) : null;
+      const cachedLookup = isAddress ? findCachedLookupForAddress(effectiveTarget, memory) : null;
       const useCachedLookup = Boolean(
         isAddress &&
         cachedLookup &&
@@ -957,23 +1030,23 @@ export class OrionHarness {
       const batchLimit = preferredTransactionBatchSize(prompt, 3);
       const lookupSnapshot = useCachedLookup
         ? cachedLookup.lookupSnapshot || {
-            address: target,
+            address: effectiveTarget,
             sourceNetwork: cachedLookup.sourceNetwork || this.session.state.network,
             account: cachedLookup.account || null,
             balance: cachedLookup.balance || null,
             recentSignatures: cachedLookup.recentSignatures || []
           }
         : isAddress
-          ? await this.solana.getLookupSnapshot(target, { limit: batchLimit }).catch(() => null)
+          ? await this.solana.getLookupSnapshot(effectiveTarget, { limit: batchLimit }).catch(() => null)
           : null;
       const explorerSnapshot = useCachedLookup
         ? cachedLookup.explorerSnapshot || null
         : lookupSnapshot?.sourceNetwork === "mainnet-beta" && this.solana.solscanApiKey
-          ? await this.solana.getExplorerSnapshot(target, { limit: batchLimit }).catch(() => null)
+          ? await this.solana.getExplorerSnapshot(effectiveTarget, { limit: batchLimit }).catch(() => null)
           : null;
       const useCachedTransactionBatch = isAddress
         && relevantMemory?.kind === "transaction-batch"
-        && relevantMemory.item?.address === target
+        && relevantMemory.item?.address === effectiveTarget
         && Array.isArray(relevantMemory.item?.transactions)
         && cachedBatchMeetsRequest(relevantMemory.item, prompt);
       let transactionBatch = useCachedTransactionBatch ? relevantMemory.item : null;
@@ -993,7 +1066,7 @@ export class OrionHarness {
           summary: await this.solana.getTransactionSummary(entry.signature).catch(() => null)
         })));
         transactionBatch = {
-          address: target,
+          address: effectiveTarget,
           sourceNetwork: lookupSnapshot?.sourceNetwork || this.session.state.network,
           signatures,
           transactions,
@@ -1006,13 +1079,13 @@ export class OrionHarness {
         });
       }
       const transactionActions = isSignature && this.solana.solscanApiKey
-        ? await this.solana.getSolscanTransactionActions(target).catch(() => null)
+        ? await this.solana.getSolscanTransactionActions(effectiveTarget).catch(() => null)
         : null;
       const transactionDetail = isSignature && this.solana.solscanApiKey && !transactionActions
-        ? await this.solana.getSolscanTransactionDetail(target).catch(() => null)
+        ? await this.solana.getSolscanTransactionDetail(effectiveTarget).catch(() => null)
         : transactionActions;
       const rpcTransaction = isSignature && !transactionDetail
-        ? await this.solana.getTransactionSummary(target).catch(() => null)
+        ? await this.solana.getTransactionSummary(effectiveTarget).catch(() => null)
         : null;
       const account = isAddress ? lookupSnapshot?.account || null : null;
       const balance = isAddress ? lookupSnapshot?.balance || null : null;
@@ -1035,7 +1108,7 @@ export class OrionHarness {
       }
       const summaryInput = {
         prompt,
-        target,
+        target: effectiveTarget,
         kind: isAddress ? "address" : "signature",
         sourceNetwork: lookupSnapshot?.sourceNetwork || this.session.state.network,
         explorer: explorerSnapshot,
@@ -1056,15 +1129,14 @@ export class OrionHarness {
 
       const lookupPrompt = [
         `User request: ${prompt}`,
-        `Target: ${target}`,
+        `Target: ${effectiveTarget}`,
         transactionDetail
           ? "Source: Solscan transaction detail/actions."
           : explorerSnapshot
             ? "Source: Solscan Pro API snapshot."
             : "Source: Solana RPC snapshot.",
-        transactionBatch?.transactions?.length ? "Cached recent transactions are included." : "",
         "Summarize only the provided evidence.",
-        JSON.stringify(summaryInput)
+        JSON.stringify(trimSummaryInput(summaryInput))
       ].filter(Boolean).join("\n");
 
       let response;
@@ -1093,7 +1165,7 @@ export class OrionHarness {
       this.session.appendHistory("assistant", response);
       if (isAddress) {
         this.session.rememberSolanaLookup({
-          address: target,
+          address: effectiveTarget,
           sourceNetwork: lookupSnapshot?.sourceNetwork || this.session.state.network,
           lookupSnapshot,
           explorerSnapshot,
@@ -1115,6 +1187,7 @@ export class OrionHarness {
 
       this.graphHarness.model = this.session.state.model;
       const startedAt = Date.now();
+
       const response = await withSpinner(
         () => this.graphHarness.runPrompt(this.context(), prompt, {
           signal: this.currentPromptController?.signal

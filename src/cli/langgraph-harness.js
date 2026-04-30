@@ -7,9 +7,10 @@ import { buildLangGraphTools } from "./langgraph-tools.js";
 import { SOLANA_DEV_SKILL } from "./solana-skill.js";
 
 function buildSystemPrompt(session, mode = "chat") {
-  const recent = (session.state.history || []).slice(-4).map((entry) => {
+  const recent = (session.state.history || []).slice(-10).map((entry) => {
     const role = entry.role === "user" ? "User" : "Assistant";
-    return `${role}: ${String(entry.content || "").slice(0, 280)}`;
+    const limit = entry.role === "user" ? 400 : 600;
+    return `${role}: ${String(entry.content || "").slice(0, limit)}`;
   });
   const taskHint =
     mode === "task"
@@ -23,15 +24,14 @@ function buildSystemPrompt(session, mode = "chat") {
       "You are ORION, an agentic DeFi CLI for Solana learners and operators.",
       taskHint,
       "Use only the provided snapshot. Be concise and factual. No markdown, no headings, no capability lists.",
-      "Return 4 to 6 short lines in Label: value format so the terminal can render a summary panel.",
-      "Put the most important facts first and say when something is unavailable instead of guessing.",
-      "When the source data is incomplete, say what is missing instead of guessing.",
+      "Return EXACTLY 4 to 8 lines. Every line MUST follow this format: Label: value — a short label, a colon, a space, then the value. No intro sentence, no prose, no blank lines, no commentary.",
+      "Choose the most important fields: Address, Balance, Network, Owner, Recent Transactions, Executable, Token Accounts, Fees, Error (if any).",
+      "When a field is unavailable say 'unavailable' as the value. Never guess or invent data.",
       `Current network: ${session.state.network}`,
       `Current RPC: ${session.state.rpcUrl}`,
       `Current wallet: ${session.state.currentWallet || "none selected"}`,
-      `Current strategy: ${session.state.currentStrategy}`,
-      `Workspace: ${session.state.workspace}`
-    ].join(" ");
+      recent.length ? `Recent conversation:\n${recent.join("\n")}` : ""
+    ].filter(Boolean).join(" ");
   }
 
   return [
@@ -63,9 +63,10 @@ function buildSystemPrompt(session, mode = "chat") {
 }
 
 function buildPlanningPrompt(session) {
-  const recent = (session.state.history || []).slice(-4).map((entry) => {
+  const recent = (session.state.history || []).slice(-10).map((entry) => {
     const role = entry.role === "user" ? "User" : "Assistant";
-    return `${role}: ${String(entry.content || "").slice(0, 280)}`;
+    const limit = entry.role === "user" ? 400 : 600;
+    return `${role}: ${String(entry.content || "").slice(0, limit)}`;
   });
   return [
     "You are ORION's planner for an agentic DeFi CLI for Solana learners and operators.",
@@ -157,7 +158,7 @@ function fallbackPlan(prompt) {
     "explain what happened",
     "summarize what you found"
   ];
-  const complex = multiStepHints.some((phrase) => text.includes(phrase)) || text.split(/\s+/).length > 8;
+  const complex = multiStepHints.some((phrase) => text.includes(phrase)) || text.split(/\s+/).length > 16;
   if (complex) {
     steps.push(
       { title: "Clarify the target", goal: "Identify the address, signature, program, wallet, or DeFi topic the user wants to inspect." },

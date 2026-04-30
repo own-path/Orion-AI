@@ -1,6 +1,6 @@
 {
   "name": "orion-ai-cli",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Agentic DeFi CLI for Solana — inspect wallets, fetch transactions, and run on-chain analysis from your terminal.",
   "type": "module",
   "license": "MIT",

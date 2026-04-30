@@ -49,7 +49,8 @@ Settings are persisted in `~/.orion/config.env` after onboarding.
 - Falls back gracefully from Solscan → RPC when keys are missing
 - Watches accounts and signatures in the background across restarts
 - Runs small read-only Solana code snippets for verification
-- Remembers recently analyzed addresses across turns
+- Maintains full session context — follow-up questions resolve references like "that wallet", "those errors", or "the program we discussed" without repeating yourself
+- Wallet and transaction data is session-scoped and cleared on restart
 
 ## Terminal UI
 
@@ -65,6 +66,7 @@ The interactive terminal shows real-time step progress as Orion works:
      signatures  10 retrieved
 ⏺ Summarizing snapshot  [3/3]
   ⎿  model  gemma4:31b-cloud
+     mode  rpc snapshot
 ```
 
 Results that are key-value structured render as a summary panel:
@@ -77,6 +79,19 @@ Results that are key-value structured render as a summary panel:
 ┃ Balance                             0.004994399 SOL
 ┃ Executable                                    false
 ```
+
+## Session context
+
+Orion tracks everything discussed in the current session. Follow-up prompts work without repeating addresses or context:
+
+```
+analyze this wallet AbNZmD3ffemMzGo3xiaXzTJf7yb7odqc75pAsMWVWHbq
+get last 5 transactions          ← resolves to the wallet above
+what does that error mean?       ← resolves to the error in the summary
+compare it with the other wallet ← resolves both wallets from history
+```
+
+All session context is cleared when you restart Orion.
 
 ## Slash commands
 
@@ -117,6 +132,7 @@ tell me about this signature 5cVXhg...jSnA
 watch this wallet and alert me if the balance changes
 compare this wallet across devnet and mainnet
 what is a token account?
+what does that InstructionError mean?
 ```
 
 ## HTTP mode
@@ -141,3 +157,4 @@ Set `ORION_PORT` to change the port.
 - Watch tasks survive restarts and resume automatically
 - Context window usage is shown live in the header bar
 - `SOLSCAN_API_KEY` unlocks token balances, DeFi positions, and richer transaction detail
+- Session context (wallet addresses, transactions, history) is cleared on each restart
